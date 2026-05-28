@@ -86,6 +86,8 @@ def find_benchmarks(coord: str, city: str, station_name: str, df: pd.DataFrame):
         if not hw and row_hw:
             continue
         d = haversine(coord, row["coord"])
+        if d < 0.1:          # 100 米内视为同一站点，跳过（防止名称略有差异时把自身纳入对标）
+            continue
         candidates.append((d, row))
     candidates.sort(key=lambda x: x[0])
     return candidates[:3]
