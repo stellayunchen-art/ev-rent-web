@@ -1,0 +1,11 @@
+# 敏感信息 - 绝对不能提交
+.streamlit/secrets.toml
+
+# Excel 文件不提交（体积大，改用 benchmarks.csv）
+*.xlsx
+*.xls
+
+# Python 缓存
+__pycache__/
+*.pyc
+.env
