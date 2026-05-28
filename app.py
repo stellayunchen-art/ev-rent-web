@@ -1,6 +1,7 @@
 # app.py — 换电站选址租金评估 网页版
 # 部署到 Streamlit Community Cloud（免费）
 
+import re
 import streamlit as st
 import requests
 import pandas as pd
@@ -17,10 +18,9 @@ st.set_page_config(
 )
 
 # ═══════════════════════════════════════════════
-#  读取 Secrets（本地 .streamlit/secrets.toml；
-#  Streamlit Cloud 上在 App Settings → Secrets 填写）
+#  读取 Secrets
 # ═══════════════════════════════════════════════
-AMAP_KEY    = st.secrets.get("AMAP_KEY",    "ce2119b87985d25e49cff4c05c6938ff")
+AMAP_KEY         = st.secrets.get("AMAP_KEY",         "ce2119b87985d25e49cff4c05c6938ff")
 COZE_TOKEN       = st.secrets.get("COZE_TOKEN",       "")
 COZE_WORKFLOW_ID = st.secrets.get("COZE_WORKFLOW_ID", "7642236438868312079")
 
@@ -54,18 +54,29 @@ def load_benchmarks() -> pd.DataFrame:
     return pd.read_csv(BENCH_CSV, dtype=str).fillna("")
 
 
-def geocode(address: str, city: str):
+def geocode(address: str):
+    """
+    输入完整地址，返回 (coord, city, district)。
+    高德 geocode 响应里自带 city / district，无需用户手填。
+    失败时返回 (None, None, None)。
+    """
     try:
         r = requests.get(
             "http://restapi.amap.com/v3/geocode/geo",
-            params={"address": address, "city": city, "key": AMAP_KEY, "output": "json"},
+            params={"address": address, "key": AMAP_KEY, "output": "json"},
             timeout=10,
         ).json()
         if r.get("status") == "1" and r.get("count", "0") != "0":
-            return r["geocodes"][0]["location"]
+            geo  = r["geocodes"][0]
+            coord = geo["location"]
+            # 高德返回 "深圳市" / "广州市"，去掉"市"以匹配 benchmarks.csv 中的城市名
+            city_raw = str(geo.get("city", "") or geo.get("province", ""))
+            city     = re.sub(r"[市省]$", "", city_raw)
+            district = str(geo.get("district", ""))
+            return coord, city, district
     except Exception:
         pass
-    return None
+    return None, None, None
 
 
 def find_benchmarks(coord: str, city: str, station_name: str, df: pd.DataFrame):
@@ -86,48 +97,11 @@ def find_benchmarks(coord: str, city: str, station_name: str, df: pd.DataFrame):
         if not hw and row_hw:
             continue
         d = haversine(coord, row["coord"])
-        if d < 0.1:          # 100 米内视为同一站点，跳过（防止名称略有差异时把自身纳入对标）
+        if d < 0.1:   # 100 米内视为同一站点，跳过
             continue
         candidates.append((d, row))
     candidates.sort(key=lambda x: x[0])
     return candidates[:3]
-
-
-def build_prompt(name, city, district, address, coord, benches) -> str:
-    base = "https://restapi.amap.com/v3/staticmap"
-    mk   = f"mid,,A:{coord}"
-    u13  = f"{base}?location={coord}&zoom=13&size=600*600&markers={mk}&key={AMAP_KEY}"
-    u14  = f"{base}?location={coord}&zoom=14&size=600*600&markers={mk}&key={AMAP_KEY}"
-    u15  = f"{base}?location={coord}&zoom=15&size=600*600&markers={mk}&key={AMAP_KEY}"
-
-    lines = [
-        "请帮我评估以下换电站租金：",
-        f"站点名称：{name}",
-        f"详细地址：{city}{district}{address}",
-        "地图参考：",
-        f"zoom13：{u13}",
-        f"zoom14：{u14}",
-        f"zoom15：{u15}",
-    ]
-
-    if benches:
-        lines.append("\n参考对标站点（按直线距离排序）：")
-        for i, (d_km, row) in enumerate(benches, 1):
-            parts = [f"对标{i}：{row['name']}（{round(d_km, 2)}km）"]
-            for key, label in [
-                ("unit_rent",  "单车位租金"),
-                ("bound_rent", "租金边界"),
-                ("bc_type",    "商圈类型"),
-                ("area_type",  "区域类型"),
-                ("road_cond",  "道路条件"),
-                ("road_type",  "道路类型"),
-            ]:
-                v = str(row.get(key, "")).strip()
-                if v and v != "nan":
-                    parts.append(f"{label}：{v}")
-            lines.append(" | ".join(parts))
-
-    return "\n".join(lines)
 
 
 def format_benchmark_info(benches) -> str:
@@ -156,9 +130,7 @@ def call_workflow(station_name, city, district, address, coord, benches=None) ->
     """调用 Coze 工作流 API，同步等待返回结果。"""
     import json as _json
     headers = {"Authorization": f"Bearer {COZE_TOKEN}", "Content-Type": "application/json"}
-
     benchmark_info = format_benchmark_info(benches or [])
-
     try:
         resp = requests.post(
             "https://api.coze.cn/v1/workflow/run",
@@ -166,7 +138,7 @@ def call_workflow(station_name, city, district, address, coord, benches=None) ->
                 "workflow_id": COZE_WORKFLOW_ID,
                 "parameters": {
                     "station_name":   station_name,
-                    "address":        f"{city}{district}{address}",
+                    "address":        address,
                     "city":           city,
                     "district":       district,
                     "coordinates":    coord,
@@ -174,7 +146,7 @@ def call_workflow(station_name, city, district, address, coord, benches=None) ->
                 },
             },
             headers=headers,
-            timeout=180,   # 工作流含视觉分析，最多等 3 分钟
+            timeout=180,
         ).json()
     except requests.Timeout:
         return "❌ 超时（180 秒），请稍后重试"
@@ -185,11 +157,9 @@ def call_workflow(station_name, city, district, address, coord, benches=None) ->
         return f"❌ 工作流调用失败（code={resp.get('code')}）：{resp.get('msg', resp)}"
 
     data = resp.get("data", "")
-    # data 可能是 JSON 字符串，也可能直接是文本
     try:
         parsed = _json.loads(data)
         if isinstance(parsed, dict):
-            # 尝试常见字段名
             for key in ("output", "result", "answer", "content"):
                 if key in parsed:
                     return str(parsed[key])
@@ -199,13 +169,43 @@ def call_workflow(station_name, city, district, address, coord, benches=None) ->
         return str(data)
 
 
+def extract_key_numbers(result: str):
+    """
+    从报告 markdown 中提取：目标单车位租金、谈判起点报价。
+    返回 (target_rent, opening_price)，提取失败时返回 None。
+    """
+    target_rent   = None
+    opening_price = None
+
+    for pattern in [
+        r"建议目标单车位租金[^：:\d]*[：:][^\d]*(\d+)\s*元",
+        r"目标单车位租金[^：:\d]*[：:][^\d]*(\d+)\s*元",
+        r"目标租金[^：:\d]*[：:][^\d]*(\d+)\s*元",
+    ]:
+        m = re.search(pattern, result)
+        if m:
+            target_rent = m.group(1)
+            break
+
+    for pattern in [
+        r"谈判起点价[^0-9]*(\d+)\s*元",
+        r"起点[报价]*[^：:\d]*[：:][^\d]*(\d+)\s*元",
+        r"起点[^0-9]{0,10}(\d+)\s*元",
+    ]:
+        m = re.search(pattern, result)
+        if m:
+            opening_price = m.group(1)
+            break
+
+    return target_rent, opening_price
+
+
 # ═══════════════════════════════════════════════
 #  页面主体
 # ═══════════════════════════════════════════════
 st.title("⚡ 换电站选址租金评估")
 st.caption("输入站点信息 → AI 自动读取地图、匹配对标案例 → 输出完整租金评估报告")
 
-# 配置缺失时给出提示
 if not COZE_TOKEN:
     st.warning(
         "⚙️ 尚未配置 Coze Token。\n\n"
@@ -214,26 +214,23 @@ if not COZE_TOKEN:
         icon="⚠️",
     )
 
-# ── 输入表单 ──────────────────────────────────
+# ── 输入表单（简化为 2 个字段）──────────────────
 with st.form("eval_form"):
-    col1, col2 = st.columns(2)
-    with col1:
-        f_name = st.text_input("站点名称 *", placeholder="例：广州天河正佳换电站")
-        f_city = st.text_input(
-            "城市 *",
-            placeholder="例：广州",
-            help="增城、花都、从化等请填「广州」，否则找不到同城对标站点",
-        )
-    with col2:
-        f_dist = st.text_input("行政区 *", placeholder="例：天河区")
-        f_addr = st.text_input("详细地址 *", placeholder="例：天河路385号正佳广场旁")
-
+    f_name = st.text_input(
+        "站点名称 *",
+        placeholder="例：广州天河正佳换电站",
+    )
+    f_addr = st.text_input(
+        "完整地址 *",
+        placeholder="例：广东省广州市天河区天河路385号正佳广场旁",
+        help="请包含省市区信息，系统将自动解析城市和行政区，无需单独填写",
+    )
     submitted = st.form_submit_button("🚀 开始评估", use_container_width=True, type="primary")
 
 # ── 评估流程 ──────────────────────────────────
 if submitted:
-    if not all([f_name, f_city, f_dist, f_addr]):
-        st.error("请填写所有标 * 的字段")
+    if not all([f_name, f_addr]):
+        st.error("请填写站点名称和完整地址")
         st.stop()
     if not COZE_TOKEN:
         st.error("请先在 Secrets 中配置 COZE_TOKEN")
@@ -241,18 +238,18 @@ if submitted:
 
     with st.status("评估进行中…", expanded=True) as status_box:
 
-        # Step 1：Geocode
+        # Step 1：Geocode（同时解析 city / district）
         st.write("📍 正在获取坐标（高德 API）…")
-        coord = geocode(f"{f_dist}{f_addr}", f_city)
+        coord, city, district = geocode(f_addr)
         if not coord:
-            st.error("❌ 坐标获取失败，请检查城市 / 地址是否填写正确")
+            st.error("❌ 坐标获取失败，请检查地址是否填写正确（建议包含省市区）")
             st.stop()
-        st.write(f"✅ 坐标：`{coord}`")
+        st.write(f"✅ 坐标：`{coord}`  |  城市：`{city}`  |  行政区：`{district}`")
 
         # Step 2：匹配对标站点
         st.write("🔍 正在匹配对标站点（Haversine 直线距离）…")
         df      = load_benchmarks()
-        benches = find_benchmarks(coord, f_city, f_name, df)
+        benches = find_benchmarks(coord, city, f_name, df)
         if benches:
             for d_km, row in benches:
                 st.write(f"  · {row['name']}  —  {round(d_km, 2)} km")
@@ -261,18 +258,66 @@ if submitted:
 
         # Step 3：调用 Coze 工作流
         st.write("🤖 正在调用 Coze 工作流（含地图视觉分析，通常需要 30–90 秒）…")
-        result = call_workflow(f_name, f_city, f_dist, f_addr, coord, benches)
+        result = call_workflow(f_name, city, district, f_addr, coord, benches)
         status_box.update(label="✅ 评估完成！", state="complete")
 
-    # ── 显示结果 ──────────────────────────────
+    # ── 双视图展示 ────────────────────────────
     st.divider()
-    st.subheader("📋 租金评估报告")
-    st.markdown(result)
+    tab_finance, tab_biz = st.tabs(["📊 财务BP 完整报告", "💼 商务同事视图"])
 
-    st.download_button(
-        label="💾 下载报告（.txt）",
-        data=f"站点：{f_name}\n地址：{f_city}{f_dist}{f_addr}\n坐标：{coord}\n\n{result}",
-        file_name=f"租金评估_{f_name}.txt",
-        mime="text/plain",
-        use_container_width=True,
-    )
+    # ── 财务BP 视图 ───────────────────────────
+    with tab_finance:
+        st.subheader("📋 租金评估报告")
+        st.markdown(result)
+        st.download_button(
+            label="💾 下载报告（.txt）",
+            data=f"站点：{f_name}\n地址：{f_addr}\n坐标：{coord}\n城市：{city}  行政区：{district}\n\n{result}",
+            file_name=f"租金评估_{f_name}.txt",
+            mime="text/plain",
+            use_container_width=True,
+        )
+
+    # ── 商务同事 视图 ─────────────────────────
+    with tab_biz:
+        target_rent, opening_price = extract_key_numbers(result)
+
+        # 1. 站点确认
+        st.markdown("#### ✅ 站点确认")
+        st.markdown(f"**站点名称：** {f_name}")
+        st.markdown(f"**地址：** {f_addr}")
+        st.markdown(f"**城市 / 行政区：** {city} · {district}")
+
+        st.divider()
+
+        # 2. 周边参考站点（距离 + 单车位租金，不显示边界）
+        st.markdown("#### 📍 周边参考站点")
+        if benches:
+            table_rows = []
+            for d_km, row in benches:
+                unit_rent = str(row.get("unit_rent", "")).strip()
+                table_rows.append({
+                    "站点名称":   row["name"],
+                    "直线距离":   f"{round(d_km, 2)} km",
+                    "单车位租金": f"{unit_rent} 元/月" if unit_rent and unit_rent != "nan" else "—",
+                })
+            st.table(pd.DataFrame(table_rows))
+        else:
+            st.info("同城市内未找到近距离参考站点")
+
+        st.divider()
+
+        # 3. 目标单车位租金
+        st.markdown("#### 🎯 目标单车位租金")
+        if target_rent:
+            st.metric(label="AI 建议成交价", value=f"{target_rent} 元/车位/月")
+        else:
+            st.warning("未能自动提取，请查看「财务BP 完整报告」标签页")
+
+        st.divider()
+
+        # 4. 谈判策略
+        st.markdown("#### 🤝 谈判策略")
+        if opening_price:
+            st.markdown(f"**起点报价：** {opening_price} 元/车位/月")
+        else:
+            st.warning("未能自动提取，请查看「财务BP 完整报告」标签页")
