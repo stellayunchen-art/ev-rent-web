@@ -128,10 +128,34 @@ def build_prompt(name, city, district, address, coord, benches) -> str:
     return "\n".join(lines)
 
 
-def call_workflow(station_name, city, district, address, coord) -> str:
+def format_benchmark_info(benches) -> str:
+    """把 Haversine 匹配到的对标站点格式化成文字，传给 Coze 工作流。"""
+    if not benches:
+        return "（同城市内未找到近距离对标站点，请依赖知识库语义检索）"
+    lines = []
+    for i, (d_km, row) in enumerate(benches, 1):
+        parts = [f"对标{i}：{row['name']}（{round(d_km, 2)}km）"]
+        for key, label in [
+            ("unit_rent",  "单车位租金"),
+            ("bound_rent", "租金边界"),
+            ("bc_type",    "商圈类型"),
+            ("area_type",  "区域类型"),
+            ("road_cond",  "道路条件"),
+            ("road_type",  "道路类型"),
+        ]:
+            v = str(row.get(key, "")).strip()
+            if v and v not in ("nan", ""):
+                parts.append(f"{label}：{v}")
+        lines.append(" | ".join(parts))
+    return "\n".join(lines)
+
+
+def call_workflow(station_name, city, district, address, coord, benches=None) -> str:
     """调用 Coze 工作流 API，同步等待返回结果。"""
     import json as _json
     headers = {"Authorization": f"Bearer {COZE_TOKEN}", "Content-Type": "application/json"}
+
+    benchmark_info = format_benchmark_info(benches or [])
 
     try:
         resp = requests.post(
@@ -139,11 +163,12 @@ def call_workflow(station_name, city, district, address, coord) -> str:
             json={
                 "workflow_id": COZE_WORKFLOW_ID,
                 "parameters": {
-                    "station_name": station_name,
-                    "address":      f"{city}{district}{address}",
-                    "city":         city,
-                    "district":     district,
-                    "coordinates":  coord,
+                    "station_name":   station_name,
+                    "address":        f"{city}{district}{address}",
+                    "city":           city,
+                    "district":       district,
+                    "coordinates":    coord,
+                    "benchmark_info": benchmark_info,
                 },
             },
             headers=headers,
@@ -234,7 +259,7 @@ if submitted:
 
         # Step 3：调用 Coze 工作流
         st.write("🤖 正在调用 Coze 工作流（含地图视觉分析，通常需要 30–90 秒）…")
-        result = call_workflow(f_name, f_city, f_dist, f_addr, coord)
+        result = call_workflow(f_name, f_city, f_dist, f_addr, coord, benches)
         status_box.update(label="✅ 评估完成！", state="complete")
 
     # ── 显示结果 ──────────────────────────────
