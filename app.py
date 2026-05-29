@@ -295,10 +295,14 @@ if submitted:
             table_rows = []
             for d_km, row in benches:
                 unit_rent = str(row.get("unit_rent", "")).strip()
+                try:
+                    unit_rent_display = f"{round(float(unit_rent))} 元/月"
+                except (ValueError, TypeError):
+                    unit_rent_display = "—"
                 table_rows.append({
                     "站点名称":   row["name"],
                     "直线距离":   f"{round(d_km, 2)} km",
-                    "单车位租金": f"{unit_rent} 元/月" if unit_rent and unit_rent != "nan" else "—",
+                    "单车位租金": unit_rent_display if unit_rent and unit_rent != "nan" else "—",
                 })
             st.table(pd.DataFrame(table_rows))
         else:
