@@ -269,6 +269,8 @@ if submitted:
     with tab_finance:
         st.subheader("📋 租金评估报告")
         st.markdown(result)
+        with st.expander("📋 一键复制纯文本"):
+            st.code(result, language=None)
         st.download_button(
             label="💾 下载报告（.txt）",
             data=f"站点：{f_name}\n地址：{f_addr}\n坐标：{coord}\n城市：{city}  行政区：{district}\n\n{result}",
