@@ -102,7 +102,7 @@ def find_nearby_commercial(coord: str) -> str:
             params={
                 "location": coord,
                 "keywords": keywords,
-                "radius":   1500,
+                "radius":   2000,
                 "sortrule": "distance",
                 "offset":   10,
                 "page":     1,
@@ -315,7 +315,7 @@ if submitted:
             st.write("  ⚠️ 同城市内未找到对标站点，将依赖知识库语义检索")
 
         # Step 2.5：查周边大型商业设施
-        st.write("🏬 正在查询周边大型商业设施（高德 1.5km 关键词搜索）…")
+        st.write("🏬 正在查询周边大型商业设施（高德 2km 关键词搜索）…")
         nearby = find_nearby_commercial(coord)
         if nearby:
             for line in nearby.split("\n")[1:]:   # 跳过标题行
