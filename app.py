@@ -112,9 +112,14 @@ def find_nearby_commercial(coord: str) -> str:
             timeout=10,
         ).json()
         pois = r.get("pois") or []
-        # 只保留名称本身含大型商业关键词的结果，过滤掉搭车进来的小店
+        # 只保留【名称主体】含大型商业关键词的结果
+        # 先去掉括号内容（括号内通常是"XX购物广场店"这类位置说明），再做匹配
+        def name_main(name: str) -> str:
+            import re
+            return re.sub(r'[（(][^）)]*[）)]', '', name).strip()
+
         pois = [p for p in pois
-                if any(kw in str(p.get("name", "")) for kw in NAME_MUST_CONTAIN)
+                if any(kw in name_main(str(p.get("name", ""))) for kw in NAME_MUST_CONTAIN)
                 and not any(kw in str(p.get("name", "")) for kw in EXCLUDE)]
         if not pois:
             return ""
