@@ -85,10 +85,17 @@ def find_nearby_commercial(coord: str) -> str:
     搜索名称含「购物广场/商场/购物中心/文化广场/万家福/大润发/沃尔玛/永辉/嘉荣」的地点。
     返回格式化文字，失败时返回空字符串。
     """
-    # 只搜特定大型商业设施名称，不用「商场」这类泛词
+    # 搜索关键词（让 API 在附近区域内搜）
     keywords = "购物广场|购物中心|文化广场|万家福|大润发|沃尔玛|永辉|嘉荣|华润万家|家乐福|天虹|步步高|万达|吾悦|宝龙"
-    # 过滤掉社区配套小设施
-    EXCLUDE = ["社区", "小区", "便民", "农贸", "菜市", "停车场", "停车楼"]
+    # 返回结果中，POI 名称必须包含以下词之一，才算真正的大型商业设施
+    NAME_MUST_CONTAIN = [
+        "购物广场", "购物中心", "文化广场", "商业广场", "商业中心",
+        "万家福", "大润发", "沃尔玛", "永辉", "嘉荣",
+        "华润万家", "家乐福", "天虹", "步步高",
+        "万达广场", "吾悦广场", "宝龙广场",
+    ]
+    # 排除明显的非商业设施
+    EXCLUDE = ["停车场", "停车楼", "社区", "小区", "便民", "农贸", "菜市"]
     try:
         r = requests.get(
             "https://restapi.amap.com/v3/place/around",
@@ -105,9 +112,10 @@ def find_nearby_commercial(coord: str) -> str:
             timeout=10,
         ).json()
         pois = r.get("pois") or []
-        # 过滤社区级小设施
+        # 只保留名称本身含大型商业关键词的结果，过滤掉搭车进来的小店
         pois = [p for p in pois
-                if not any(kw in str(p.get("name", "")) for kw in EXCLUDE)]
+                if any(kw in str(p.get("name", "")) for kw in NAME_MUST_CONTAIN)
+                and not any(kw in str(p.get("name", "")) for kw in EXCLUDE)]
         if not pois:
             return ""
         lines = []
