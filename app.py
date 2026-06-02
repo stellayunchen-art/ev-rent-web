@@ -47,7 +47,7 @@ def haversine(c1: str, c2: str) -> float:
         return 99999.0
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=300)
 def load_benchmarks() -> pd.DataFrame:
     if not BENCH_CSV.exists():
         return pd.DataFrame()
