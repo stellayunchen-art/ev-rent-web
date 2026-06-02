@@ -330,7 +330,7 @@ if not COZE_TOKEN:
         icon="⚠️",
     )
 
-# ── 输入表单（简化为 2 个字段）──────────────────
+# ── 输入表单 ──────────────────────────────────
 with st.form("eval_form"):
     f_name = st.text_input(
         "站点名称 *",
@@ -340,6 +340,11 @@ with st.form("eval_form"):
         "完整地址 *",
         placeholder="例：广东省广州市天河区天河路385号正佳广场旁",
         help="请包含省市区信息，系统将自动解析城市和行政区，无需单独填写",
+    )
+    f_coord = st.text_input(
+        "坐标（选填，高德定位不准时手动填入）",
+        placeholder="例：113.935068,22.677748",
+        help="从钉图易点击站点位置获取坐标，格式：经度,纬度。填入后将覆盖高德自动定位。",
     )
     submitted = st.form_submit_button("🚀 开始评估", use_container_width=True, type="primary")
 
@@ -354,13 +359,33 @@ if submitted:
 
     with st.status("评估进行中…", expanded=True) as status_box:
 
-        # Step 1：Geocode（同时解析 city / district）
-        st.write("📍 正在获取坐标（高德 API）…")
-        coord, city, district = geocode(f_addr)
-        if not coord:
-            st.error("❌ 坐标获取失败，请检查地址是否填写正确（建议包含省市区）")
-            st.stop()
-        st.write(f"✅ 坐标：`{coord}`  |  城市：`{city}`  |  行政区：`{district}`")
+        # Step 1：坐标（手动输入优先，否则 Geocode）
+        manual_coord = f_coord.strip() if f_coord and "," in f_coord.strip() else None
+
+        if manual_coord:
+            st.write("📍 使用手动输入坐标，正在解析城市信息…")
+            # 用 regeo 从坐标反查城市/行政区
+            try:
+                rg = requests.get(
+                    "https://restapi.amap.com/v3/geocode/regeo",
+                    params={"location": manual_coord, "key": AMAP_KEY, "output": "json"},
+                    timeout=10,
+                ).json()
+                addr_comp = (rg.get("regeocode") or {}).get("addressComponent") or {}
+                city_raw  = str(addr_comp.get("city") or addr_comp.get("province") or "")
+                city      = re.sub(r"[市省]$", "", city_raw)
+                district  = str(addr_comp.get("district") or "")
+                coord     = manual_coord
+            except Exception:
+                coord, city, district = geocode(f_addr)
+            st.write(f"✅ 坐标（手动）：`{coord}`  |  城市：`{city}`  |  行政区：`{district}`")
+        else:
+            st.write("📍 正在获取坐标（高德 API）…")
+            coord, city, district = geocode(f_addr)
+            if not coord:
+                st.error("❌ 坐标获取失败，请检查地址是否填写正确（建议包含省市区）")
+                st.stop()
+            st.write(f"✅ 坐标：`{coord}`  |  城市：`{city}`  |  行政区：`{district}`")
 
         # Step 2：匹配对标站点
         st.write("🔍 正在匹配对标站点（Haversine 直线距离）…")
