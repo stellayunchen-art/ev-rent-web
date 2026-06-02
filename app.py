@@ -92,7 +92,7 @@ def find_nearby_roads(coord: str) -> str:
                 "location":   coord,
                 "key":        AMAP_KEY,
                 "extensions": "all",
-                "radius":     500,
+                "radius":     1000,
                 "output":     "json",
             },
             timeout=10,
