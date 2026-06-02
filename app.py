@@ -146,10 +146,10 @@ def call_workflow(station_name, city, district, address, coord, benches=None) ->
                 },
             },
             headers=headers,
-            timeout=180,
+            timeout=300,
         ).json()
     except requests.Timeout:
-        return "❌ 超时（180 秒），请稍后重试"
+        return "❌ 超时（300 秒），请稍后重试"
     except Exception as e:
         return f"❌ 请求异常：{e}"
 
