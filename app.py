@@ -79,6 +79,48 @@ def geocode(address: str):
     return None, None, None
 
 
+def find_nearby_transit(coord: str) -> str:
+    """
+    用高德关键词周边搜索，找坐标2km内的城轨/地铁/高铁/城际站。
+    结果用于给 Coze 提供准确的 POI 距离，防止视觉分析误判为远端地标。
+    返回格式化文字，失败时返回空字符串。
+    """
+    keywords = "地铁站|城轨站|高铁站|城际站|轻轨站|火车站"
+    # 名称必须含以下词之一，排除"地铁XX站出口""地铁停车场"等干扰项
+    NAME_MUST_CONTAIN = ["地铁", "城轨", "高铁", "城际", "轻轨", "火车站"]
+    EXCLUDE = ["出口", "停车", "公交", "换乘中心"]
+    try:
+        r = requests.get(
+            "https://restapi.amap.com/v3/place/around",
+            params={
+                "location": coord,
+                "keywords": keywords,
+                "radius":   2000,
+                "sortrule": "distance",
+                "offset":   5,
+                "page":     1,
+                "key":      AMAP_KEY,
+                "output":   "json",
+            },
+            timeout=10,
+        ).json()
+        pois = r.get("pois") or []
+        pois = [p for p in pois
+                if any(kw in str(p.get("name", "")) for kw in NAME_MUST_CONTAIN)
+                and not any(kw in str(p.get("name", "")) for kw in EXCLUDE)]
+        if not pois:
+            return ""
+        lines = []
+        for poi in pois[:3]:
+            name = str(poi.get("name", "")).strip()
+            dist = poi.get("distance", "")
+            dist_str = f"{dist}m" if dist else "距离未知"
+            lines.append(f"{name}（{dist_str}）")
+        return "【周边交通枢纽（高德自动检索，2km内）】\n" + "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def find_nearby_commercial(coord: str) -> str:
     """
     用高德关键词周边搜索，找坐标1.5km内的大型商业设施。
@@ -186,6 +228,9 @@ def call_workflow(station_name, city, district, address, coord, benches=None) ->
     import json as _json
     headers = {"Authorization": f"Bearer {COZE_TOKEN}", "Content-Type": "application/json"}
     benchmark_info = format_benchmark_info(benches or [])
+    nearby_transit = find_nearby_transit(coord)
+    if nearby_transit:
+        benchmark_info = benchmark_info + "\n\n" + nearby_transit
     nearby_commercial = find_nearby_commercial(coord)
     if nearby_commercial:
         benchmark_info = benchmark_info + "\n\n" + nearby_commercial
@@ -314,7 +359,16 @@ if submitted:
         else:
             st.write("  ⚠️ 同城市内未找到对标站点，将依赖知识库语义检索")
 
-        # Step 2.5：查周边大型商业设施
+        # Step 2.5：查周边交通枢纽 + 大型商业设施
+        st.write("🚉 正在查询周边交通枢纽（高德 2km 搜索）…")
+        nearby_tr = find_nearby_transit(coord)
+        if nearby_tr:
+            for line in nearby_tr.split("\n")[1:]:
+                if line.strip():
+                    st.write(f"  · {line.strip()}")
+        else:
+            st.write("  · 2km 内未检索到城轨/地铁/高铁站")
+
         st.write("🏬 正在查询周边大型商业设施（高德 2km 关键词搜索）…")
         nearby = find_nearby_commercial(coord)
         if nearby:
@@ -336,7 +390,15 @@ if submitted:
     # ── 财务BP 视图 ───────────────────────────
     with tab_finance:
         st.subheader("📋 租金评估报告")
-        st.markdown(result)
+        # 在各主章节标题（以报告 emoji 开头的行）前插入分隔线，改善可读性
+        SECTION_EMOJIS = ("📍", "📚", "💡", "💰", "🤝", "🔥")
+        formatted_lines = []
+        for line in result.splitlines():
+            stripped = line.lstrip()
+            if any(stripped.startswith(e) for e in SECTION_EMOJIS) and formatted_lines:
+                formatted_lines.append("\n---\n")
+            formatted_lines.append(line)
+        st.markdown("\n".join(formatted_lines))
         with st.expander("📋 一键复制纯文本"):
             st.code(result, language=None)
         st.download_button(
