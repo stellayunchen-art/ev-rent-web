@@ -79,6 +79,50 @@ def geocode(address: str):
     return None, None, None
 
 
+def find_nearby_roads(coord: str) -> str:
+    """
+    调用高德 regeo（extensions=all）获取坐标周边道路信息。
+    返回格式化文字供 Coze 直接使用，失败时返回空字符串。
+    同时将原始 roads 字段打印到 st.session_state 供调试查看。
+    """
+    try:
+        r = requests.get(
+            "https://restapi.amap.com/v3/geocode/regeo",
+            params={
+                "location":   coord,
+                "key":        AMAP_KEY,
+                "extensions": "all",
+                "radius":     500,
+                "output":     "json",
+            },
+            timeout=10,
+        ).json()
+        roads = (r.get("regeocode") or {}).get("roads") or []
+        # 调试：把原始返回存起来，页面上可展开查看
+        st.session_state["_regeo_roads_raw"] = roads
+
+        if not roads:
+            return ""
+        lines = []
+        for road in roads[:6]:
+            name     = str(road.get("name",      "")).strip()
+            distance = str(road.get("distance",  "")).strip()
+            direction= str(road.get("direction", "")).strip()
+            # 尝试读取等级字段（不同版本字段名不同）
+            level    = str(road.get("level",  road.get("type", road.get("roadclass", "")))).strip()
+            parts = [name]
+            if distance:
+                parts.append(f"{distance}m")
+            if direction:
+                parts.append(direction)
+            if level and level not in ("", "None"):
+                parts.append(f"等级:{level}")
+            lines.append("·  " + "  ".join(parts))
+        return "【周边道路（高德regeo，500m内）】\n" + "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def _name_main(name: str) -> str:
     """去掉括号内的位置说明，返回名称主体。"""
     return re.sub(r'[（(][^）)]*[）)]', '', name).strip()
@@ -372,7 +416,17 @@ if submitted:
         else:
             st.write("  ⚠️ 同城市内未找到对标站点，将依赖知识库语义检索")
 
-        # Step 2.5：查周边交通枢纽 + 大型商业设施
+        # Step 2.5：查周边道路（regeo）
+        st.write("🛣️ 正在查询周边道路信息（高德 regeo）…")
+        nearby_roads = find_nearby_roads(coord)
+        if nearby_roads:
+            for line in nearby_roads.split("\n")[1:]:
+                if line.strip():
+                    st.write(f"  {line.strip()}")
+        else:
+            st.write("  · 未获取到周边道路数据")
+
+        # Step 2.6：查周边交通枢纽 + 大型商业设施
         st.write("🚉 正在查询周边交通枢纽（高德 2km 搜索）…")
         nearby_tr = find_nearby_transit(coord)
         if nearby_tr:
@@ -425,6 +479,11 @@ if submitted:
             # 非空行末尾加两个空格，强制 Markdown 保留换行
             formatted_lines.append(line + ("  " if stripped else ""))
         st.markdown("\n".join(formatted_lines))
+        # 调试：查看 regeo roads 原始字段，确认高德返回了哪些道路等级信息
+        if st.session_state.get("_regeo_roads_raw"):
+            with st.expander("🔍 [调试] regeo 原始道路字段"):
+                st.json(st.session_state["_regeo_roads_raw"])
+
         with st.expander("📋 一键复制纯文本"):
             st.code(result, language=None)
         st.download_button(
