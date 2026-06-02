@@ -121,6 +121,49 @@ def find_nearby_transit(coord: str) -> str:
         return ""
 
 
+def find_nearby_industrial(coord: str) -> str:
+    """
+    用高德关键词周边搜索，找坐标2km内的工业园/产业园/科技园。
+    结果拼入 benchmark_info，供 Coze LLM2 正确标注工业地标距离。
+    """
+    keywords = "产业园|工业园|工业区|科技园|工业城|产业城|创新中心|研发中心"
+    NAME_MUST_CONTAIN = [
+        "产业园", "工业园", "工业区", "科技园", "工业城", "产业城",
+        "创新中心", "研发中心", "产业基地", "工业基地",
+    ]
+    EXCLUDE = ["停车", "公寓", "宿舍", "社区", "小区"]
+    try:
+        r = requests.get(
+            "https://restapi.amap.com/v3/place/around",
+            params={
+                "location": coord,
+                "keywords": keywords,
+                "radius":   2000,
+                "sortrule": "distance",
+                "offset":   8,
+                "page":     1,
+                "key":      AMAP_KEY,
+                "output":   "json",
+            },
+            timeout=10,
+        ).json()
+        pois = r.get("pois") or []
+        pois = [p for p in pois
+                if any(kw in str(p.get("name", "")) for kw in NAME_MUST_CONTAIN)
+                and not any(kw in str(p.get("name", "")) for kw in EXCLUDE)]
+        if not pois:
+            return ""
+        lines = []
+        for poi in pois[:5]:
+            name = str(poi.get("name", "")).strip()
+            dist = poi.get("distance", "")
+            dist_str = f"{dist}m" if dist else "距离未知"
+            lines.append(f"{name}（{dist_str}）")
+        return "【周边工业园/产业园（高德自动检索，2km内）】\n" + "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def find_nearby_commercial(coord: str) -> str:
     """
     用高德关键词周边搜索，找坐标1.5km内的大型商业设施。
@@ -231,6 +274,9 @@ def call_workflow(station_name, city, district, address, coord, benches=None) ->
     nearby_transit = find_nearby_transit(coord)
     if nearby_transit:
         benchmark_info = benchmark_info + "\n\n" + nearby_transit
+    nearby_industrial = find_nearby_industrial(coord)
+    if nearby_industrial:
+        benchmark_info = benchmark_info + "\n\n" + nearby_industrial
     nearby_commercial = find_nearby_commercial(coord)
     if nearby_commercial:
         benchmark_info = benchmark_info + "\n\n" + nearby_commercial
@@ -368,6 +414,15 @@ if submitted:
                     st.write(f"  · {line.strip()}")
         else:
             st.write("  · 2km 内未检索到城轨/地铁/高铁站")
+
+        st.write("🏭 正在查询周边工业园/产业园（高德 2km 搜索）…")
+        nearby_ind = find_nearby_industrial(coord)
+        if nearby_ind:
+            for line in nearby_ind.split("\n")[1:]:
+                if line.strip():
+                    st.write(f"  · {line.strip()}")
+        else:
+            st.write("  · 2km 内未检索到工业园/产业园")
 
         st.write("🏬 正在查询周边大型商业设施（高德 2km 关键词搜索）…")
         nearby = find_nearby_commercial(coord)
