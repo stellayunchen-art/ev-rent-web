@@ -186,7 +186,8 @@ def find_nearby_commercial(coord: str) -> str:
         "万达广场", "吾悦广场", "宝龙广场",
     ]
     # 排除明显的非商业设施
-    EXCLUDE = ["停车场", "停车楼", "社区", "小区", "便民", "农贸", "菜市"]
+    EXCLUDE = ["停车场", "停车楼", "社区", "小区", "便民", "农贸", "菜市",
+               "洗手间", "厕所", "卫生间", "出入口", "入口", "出口"]
     try:
         r = requests.get(
             "https://restapi.amap.com/v3/place/around",
