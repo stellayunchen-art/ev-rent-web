@@ -105,8 +105,11 @@ def find_nearby_transit(coord: str) -> str:
             timeout=10,
         ).json()
         pois = r.get("pois") or []
+        def name_main(name: str) -> str:
+            return re.sub(r'[（(][^）)]*[）)]', '', name).strip()
+
         pois = [p for p in pois
-                if any(kw in str(p.get("name", "")) for kw in NAME_MUST_CONTAIN)
+                if any(kw in name_main(str(p.get("name", ""))) for kw in NAME_MUST_CONTAIN)
                 and not any(kw in str(p.get("name", "")) for kw in EXCLUDE)]
         if not pois:
             return ""
@@ -148,8 +151,11 @@ def find_nearby_industrial(coord: str) -> str:
             timeout=10,
         ).json()
         pois = r.get("pois") or []
+        def name_main(name: str) -> str:
+            return re.sub(r'[（(][^）)]*[）)]', '', name).strip()
+
         pois = [p for p in pois
-                if any(kw in str(p.get("name", "")) for kw in NAME_MUST_CONTAIN)
+                if any(kw in name_main(str(p.get("name", ""))) for kw in NAME_MUST_CONTAIN)
                 and not any(kw in str(p.get("name", "")) for kw in EXCLUDE)]
         if not pois:
             return ""
