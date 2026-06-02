@@ -79,6 +79,42 @@ def geocode(address: str):
     return None, None, None
 
 
+def find_nearby_commercial(coord: str) -> str:
+    """
+    用高德关键词周边搜索，找坐标1.5km内的大型商业设施。
+    搜索名称含「购物广场/商场/购物中心/文化广场/万家福/大润发/沃尔玛/永辉/嘉荣」的地点。
+    返回格式化文字，失败时返回空字符串。
+    """
+    keywords = "购物广场|商场|购物中心|文化广场|万家福|大润发|沃尔玛|永辉|嘉荣|华润万家|家乐福"
+    try:
+        r = requests.get(
+            "https://restapi.amap.com/v3/place/around",
+            params={
+                "location": coord,
+                "keywords": keywords,
+                "radius":   1500,
+                "sortrule": "distance",
+                "offset":   5,
+                "page":     1,
+                "key":      AMAP_KEY,
+                "output":   "json",
+            },
+            timeout=10,
+        ).json()
+        pois = r.get("pois") or []
+        if not pois:
+            return ""
+        lines = []
+        for poi in pois[:5]:
+            name = str(poi.get("name", "")).strip()
+            dist = poi.get("distance", "")
+            dist_str = f"{dist}m" if dist else "距离未知"
+            lines.append(f"{name}（{dist_str}）")
+        return "【周边大型商业/文化设施（高德自动检索，1.5km内）】\n" + "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def find_benchmarks(coord: str, city: str, station_name: str, df: pd.DataFrame):
     if df.empty:
         return []
@@ -131,6 +167,9 @@ def call_workflow(station_name, city, district, address, coord, benches=None) ->
     import json as _json
     headers = {"Authorization": f"Bearer {COZE_TOKEN}", "Content-Type": "application/json"}
     benchmark_info = format_benchmark_info(benches or [])
+    nearby_commercial = find_nearby_commercial(coord)
+    if nearby_commercial:
+        benchmark_info = benchmark_info + "\n\n" + nearby_commercial
     try:
         resp = requests.post(
             "https://api.coze.cn/v1/workflow/run",
@@ -255,6 +294,16 @@ if submitted:
                 st.write(f"  · {row['name']}  —  {round(d_km, 2)} km")
         else:
             st.write("  ⚠️ 同城市内未找到对标站点，将依赖知识库语义检索")
+
+        # Step 2.5：查周边大型商业设施
+        st.write("🏬 正在查询周边大型商业设施（高德 1.5km 关键词搜索）…")
+        nearby = find_nearby_commercial(coord)
+        if nearby:
+            for line in nearby.split("\n")[1:]:   # 跳过标题行
+                if line.strip():
+                    st.write(f"  · {line.strip()}")
+        else:
+            st.write("  · 1.5km 内未检索到大型商业/文化设施")
 
         # Step 3：调用 Coze 工作流
         st.write("🤖 正在调用 Coze 工作流（含地图视觉分析，通常需要 30–90 秒）…")
