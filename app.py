@@ -79,115 +79,85 @@ def geocode(address: str):
     return None, None, None
 
 
+def _name_main(name: str) -> str:
+    """去掉括号内的位置说明，返回名称主体。"""
+    return re.sub(r'[（(][^）)]*[）)]', '', name).strip()
+
+
+def _kw_at_end(name_m: str, keywords: list) -> bool:
+    """关键词必须出现在名称末尾（后面最多跟1个字符，如A/B区编号），过滤"工业区五期仓库"类噪音。"""
+    for kw in keywords:
+        idx = name_m.find(kw)
+        if idx == -1:
+            continue
+        after = name_m[idx + len(kw):]
+        if len(after) <= 1:   # 末尾或仅跟单字区编号
+            return True
+    return False
+
+
 def find_nearby_transit(coord: str) -> str:
-    """
-    用高德关键词周边搜索，找坐标2km内的城轨/地铁/高铁/城际站。
-    结果用于给 Coze 提供准确的 POI 距离，防止视觉分析误判为远端地标。
-    返回格式化文字，失败时返回空字符串。
-    """
+    """2km内城轨/地铁/高铁/城际站，结果传给 Coze 防止误判距离。"""
     keywords = "地铁站|城轨站|高铁站|城际站|轻轨站|火车站"
-    # 名称必须含以下词之一，排除"地铁XX站出口""地铁停车场"等干扰项
     NAME_MUST_CONTAIN = ["地铁", "城轨", "高铁", "城际", "轻轨", "火车站"]
     EXCLUDE = ["出口", "停车", "公交", "换乘中心"]
     try:
         r = requests.get(
             "https://restapi.amap.com/v3/place/around",
-            params={
-                "location": coord,
-                "keywords": keywords,
-                "radius":   2000,
-                "sortrule": "distance",
-                "offset":   5,
-                "page":     1,
-                "key":      AMAP_KEY,
-                "output":   "json",
-            },
+            params={"location": coord, "keywords": keywords, "radius": 2000,
+                    "sortrule": "distance", "offset": 5, "page": 1,
+                    "key": AMAP_KEY, "output": "json"},
             timeout=10,
         ).json()
         pois = r.get("pois") or []
-        def name_main(name: str) -> str:
-            return re.sub(r'[（(][^）)]*[）)]', '', name).strip()
-
         pois = [p for p in pois
-                if any(kw in name_main(str(p.get("name", ""))) for kw in NAME_MUST_CONTAIN)
+                if any(kw in _name_main(str(p.get("name", ""))) for kw in NAME_MUST_CONTAIN)
+                and "-" not in _name_main(str(p.get("name", "")))
                 and not any(kw in str(p.get("name", "")) for kw in EXCLUDE)]
         if not pois:
             return ""
-        lines = []
-        for poi in pois[:3]:
-            name = str(poi.get("name", "")).strip()
-            dist = poi.get("distance", "")
-            dist_str = f"{dist}m" if dist else "距离未知"
-            lines.append(f"{name}（{dist_str}）")
+        lines = [f"{p.get('name', '').strip()}（{p.get('distance', '')}m）" for p in pois[:3]]
         return "【周边交通枢纽（高德自动检索，2km内）】\n" + "\n".join(lines)
     except Exception:
         return ""
 
 
 def find_nearby_industrial(coord: str) -> str:
-    """
-    用高德关键词周边搜索，找坐标2km内的工业园/产业园/科技园。
-    结果拼入 benchmark_info，供 Coze LLM2 正确标注工业地标距离。
-    """
+    """2km内工业园/产业园，结果传给 Coze 防止误判距离。"""
     keywords = "产业园|工业园|工业区|科技园|工业城|产业城|创新中心|研发中心"
     NAME_MUST_CONTAIN = [
         "产业园", "工业园", "工业区", "科技园", "工业城", "产业城",
         "创新中心", "研发中心", "产业基地", "工业基地",
     ]
-    EXCLUDE = ["停车", "公寓", "宿舍", "社区", "小区"]
     try:
         r = requests.get(
             "https://restapi.amap.com/v3/place/around",
-            params={
-                "location": coord,
-                "keywords": keywords,
-                "radius":   2000,
-                "sortrule": "distance",
-                "offset":   8,
-                "page":     1,
-                "key":      AMAP_KEY,
-                "output":   "json",
-            },
+            params={"location": coord, "keywords": keywords, "radius": 2000,
+                    "sortrule": "distance", "offset": 8, "page": 1,
+                    "key": AMAP_KEY, "output": "json"},
             timeout=10,
         ).json()
         pois = r.get("pois") or []
-        def name_main(name: str) -> str:
-            return re.sub(r'[（(][^）)]*[）)]', '', name).strip()
-
         pois = [p for p in pois
-                if any(kw in name_main(str(p.get("name", ""))) for kw in NAME_MUST_CONTAIN)
-                and not any(kw in str(p.get("name", "")) for kw in EXCLUDE)]
+                if _kw_at_end(_name_main(str(p.get("name", ""))), NAME_MUST_CONTAIN)
+                and "-" not in _name_main(str(p.get("name", "")))]
         if not pois:
             return ""
-        lines = []
-        for poi in pois[:5]:
-            name = str(poi.get("name", "")).strip()
-            dist = poi.get("distance", "")
-            dist_str = f"{dist}m" if dist else "距离未知"
-            lines.append(f"{name}（{dist_str}）")
+        lines = [f"{p.get('name', '').strip()}（{p.get('distance', '')}m）" for p in pois[:5]]
         return "【周边工业园/产业园（高德自动检索，2km内）】\n" + "\n".join(lines)
     except Exception:
         return ""
 
 
 def find_nearby_commercial(coord: str) -> str:
-    """
-    用高德关键词周边搜索，找坐标1.5km内的大型商业设施。
-    搜索名称含「购物广场/商场/购物中心/文化广场/万家福/大润发/沃尔玛/永辉/嘉荣」的地点。
-    返回格式化文字，失败时返回空字符串。
-    """
-    # 搜索关键词（让 API 在附近区域内搜）
+    """2km内大型商业/文化设施，结果传给 Coze 补充地图盲区。"""
     keywords = "购物广场|购物中心|文化广场|万家福|大润发|沃尔玛|永辉|嘉荣|华润万家|家乐福|天虹|步步高|万达|吾悦|宝龙"
-    # 返回结果中，POI 名称必须包含以下词之一，才算真正的大型商业设施
     NAME_MUST_CONTAIN = [
         "购物广场", "购物中心", "文化广场", "商业广场", "商业中心",
         "万家福", "大润发", "沃尔玛", "永辉", "嘉荣",
         "华润万家", "家乐福", "天虹", "步步高",
         "万达广场", "吾悦广场", "宝龙广场",
     ]
-    # 排除明显的非商业设施
-    EXCLUDE = ["停车场", "停车楼", "社区", "小区", "便民", "农贸", "菜市",
-               "洗手间", "厕所", "卫生间", "出入口", "入口", "出口"]
     try:
         r = requests.get(
             "https://restapi.amap.com/v3/place/around",
@@ -204,24 +174,14 @@ def find_nearby_commercial(coord: str) -> str:
             timeout=10,
         ).json()
         pois = r.get("pois") or []
-        # 只保留【名称主体】含大型商业关键词的结果
-        # 先去掉括号内容（括号内通常是"XX购物广场店"这类位置说明），再做匹配
-        def name_main(name: str) -> str:
-            import re
-            return re.sub(r'[（(][^）)]*[）)]', '', name).strip()
-
+        # 关键词须出现在名称末尾，且名称主体不含连字符（过滤子地点噪音）
         pois = [p for p in pois
-                if any(kw in name_main(str(p.get("name", ""))) for kw in NAME_MUST_CONTAIN)
-                and not any(kw in str(p.get("name", "")) for kw in EXCLUDE)]
+                if _kw_at_end(_name_main(str(p.get("name", ""))), NAME_MUST_CONTAIN)
+                and "-" not in _name_main(str(p.get("name", "")))]
         if not pois:
             return ""
-        lines = []
-        for poi in pois[:5]:
-            name = str(poi.get("name", "")).strip()
-            dist = poi.get("distance", "")
-            dist_str = f"{dist}m" if dist else "距离未知"
-            lines.append(f"{name}（{dist_str}）")
-        return "【周边大型商业/文化设施（高德自动检索，1.5km内）】\n" + "\n".join(lines)
+        lines = [f"{p.get('name', '').strip()}（{p.get('distance', '')}m）" for p in pois[:5]]
+        return "【周边大型商业/文化设施（高德自动检索，2km内）】\n" + "\n".join(lines)
     except Exception:
         return ""
 
