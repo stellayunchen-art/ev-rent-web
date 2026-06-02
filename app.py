@@ -390,14 +390,18 @@ if submitted:
     # ── 财务BP 视图 ───────────────────────────
     with tab_finance:
         st.subheader("📋 租金评估报告")
-        # 在各主章节标题（以报告 emoji 开头的行）前插入分隔线，改善可读性
+        # Markdown 单换行=空格，需在行尾加两个空格才能强制换行
+        # 章节标题前额外插入 --- 分隔线
         SECTION_EMOJIS = ("📍", "📚", "💡", "💰", "🤝", "🔥")
         formatted_lines = []
         for line in result.splitlines():
             stripped = line.lstrip()
             if any(stripped.startswith(e) for e in SECTION_EMOJIS) and formatted_lines:
-                formatted_lines.append("\n---\n")
-            formatted_lines.append(line)
+                formatted_lines.append("")
+                formatted_lines.append("---")
+                formatted_lines.append("")
+            # 非空行末尾加两个空格，强制 Markdown 保留换行
+            formatted_lines.append(line + ("  " if stripped else ""))
         st.markdown("\n".join(formatted_lines))
         with st.expander("📋 一键复制纯文本"):
             st.code(result, language=None)
