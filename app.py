@@ -88,7 +88,7 @@ def find_nearby_commercial(coord: str) -> str:
     # 只搜特定大型商业设施名称，不用「商场」这类泛词
     keywords = "购物广场|购物中心|文化广场|万家福|大润发|沃尔玛|永辉|嘉荣|华润万家|家乐福|天虹|步步高|万达|吾悦|宝龙"
     # 过滤掉社区配套小设施
-    EXCLUDE = ["社区", "小区", "便民", "农贸", "菜市"]
+    EXCLUDE = ["社区", "小区", "便民", "农贸", "菜市", "停车场", "停车楼"]
     try:
         r = requests.get(
             "https://restapi.amap.com/v3/place/around",
