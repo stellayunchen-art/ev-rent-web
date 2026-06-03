@@ -360,7 +360,9 @@ if submitted:
     with st.status("评估进行中…", expanded=True) as status_box:
 
         # Step 1：坐标（手动输入优先，否则 Geocode）
-        manual_coord = f_coord.strip() if f_coord and "," in f_coord.strip() else None
+        # 兼容中文逗号「，」
+        _fc = f_coord.strip().replace("，", ",") if f_coord else ""
+        manual_coord = _fc if _fc and "," in _fc else None
 
         if manual_coord:
             st.write("📍 使用手动输入坐标，正在解析城市信息…")
