@@ -344,7 +344,7 @@ with st.form("eval_form"):
     f_coord = st.text_input(
         "坐标（选填，高德定位不准时手动填入）",
         placeholder="例：113.935068,22.677748",
-        help="从钉图易点击站点位置获取坐标，格式：经度,纬度。填入后将覆盖高德自动定位。",
+        help="从钉图易点击站点位置获取坐标，格式：经度,纬度（中英文逗号均可）。填入后将覆盖高德自动定位。",
     )
     submitted = st.form_submit_button("🚀 开始评估", use_container_width=True, type="primary")
 
