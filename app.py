@@ -27,16 +27,6 @@ COZE_WORKFLOW_ID = st.secrets.get("COZE_WORKFLOW_ID", "7642236438868312079")
 HIGHWAY_KEYWORDS = ["高速", "服务区", "收费站"]
 BENCH_CSV = Path(__file__).parent / "benchmarks.csv"
 
-# 贝壳找房城市代码映射
-BEIKE_CITY_MAP = {
-    "广州": "gz",   "深圳": "sz",   "东莞": "dg",   "佛山": "fs",
-    "珠海": "zhuhai", "惠州": "huizhou", "中山": "zs", "江门": "jm",
-    "汕头": "st",   "湛江": "zhanjiang", "肇庆": "zhaoqing",
-    "清远": "qingyuan", "河源": "heyuan",  "梅州": "meizhou",
-    "韶关": "sg",   "茂名": "maoming",   "阳江": "yangjiang",
-    "揭州": "jieyang", "潮州": "chaozhou",
-}
-
 # ═══════════════════════════════════════════════
 #  工具函数
 # ═══════════════════════════════════════════════
@@ -159,94 +149,6 @@ def find_nearby_industrial(coord: str) -> str:
         return ""
 
 
-def find_nearby_housing_price(coord: str, city: str) -> str:
-    """查询站点周边住宅小区的二手房挂牌均价（高德POI定位小区 → 贝壳找房查价）。"""
-    city_code = BEIKE_CITY_MAP.get(city, "")
-    if not city_code:
-        return ""
-
-    # Step 1：高德POI搜索周边住宅小区
-    RESIDENTIAL_INCLUDE = ["小区", "花园", "豪庭", "御府", "公馆", "华府", "名邸", "苑", "新村", "府", "里", "湾", "城"]
-    RESIDENTIAL_EXCLUDE = [
-        "停车", "物业", "商业", "工业", "办公", "幼儿", "学校", "医院",
-        "宿舍", "职工", "员工", "生活区", "招待所", "公寓楼",  # 员工/临时住所
-        "大厦", "商务", "写字楼",                               # 办公类
-        "农贸", "市场", "仓库", "厂房",                         # 工业/商业类
-    ]
-    try:
-        r = requests.get(
-            "https://restapi.amap.com/v3/place/around",
-            params={
-                "location": coord,
-                "keywords": "住宅小区|小区|花园|住宅区",
-                "types":    "120302",   # 商品住宅
-                "radius":   2000,
-                "sortrule": "distance",
-                "offset":   10,
-                "page":     1,
-                "key":      AMAP_KEY,
-                "output":   "json",
-            },
-            timeout=10,
-        ).json()
-        pois = r.get("pois") or []
-        communities = [
-            p for p in pois
-            if any(kw in str(p.get("name", "")) for kw in RESIDENTIAL_INCLUDE)
-            and not any(kw in str(p.get("name", "")) for kw in RESIDENTIAL_EXCLUDE)
-        ][:8]
-    except Exception:
-        return ""
-
-    if not communities:
-        return ""
-
-    # Step 2：逐一查询贝壳找房均价
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        )
-    }
-    results = []
-    for poi in communities:
-        name = str(poi.get("name", "")).strip()
-        dist = poi.get("distance", "?")
-        try:
-            url = f"https://{city_code}.ke.com/xiaoqu/rs{requests.utils.quote(name)}/"
-            resp = requests.get(url, headers=headers, timeout=8)
-            text = resp.text
-            # 多种正则兜底
-            price = None
-            for pat in [
-                r'"unitPrice"\s*:\s*(\d{4,6})',      # 新版JSON字段
-                r'"price"\s*:\s*"(\d{4,6})"',        # 旧版字符串字段
-                r'均价</[^>]+>\s*<[^>]+>(\d{4,6})',  # HTML标签内
-                r'均价.*?(\d{4,6})\s*元/㎡',          # 文本描述
-            ]:
-                m = re.search(pat, text)
-                if m:
-                    price = m.group(1)
-                    break
-            if price:
-                results.append({"name": name, "dist": dist, "price": int(price)})
-        except Exception:
-            continue
-        if len(results) >= 3:
-            break
-
-    if not results:
-        return ""
-
-    lines = ["【周边住宅二手房挂牌均价（贝壳找房，仅供参考）】"]
-    for item in results:
-        lines.append(f"{item['name']}（{item['dist']}m）：约{item['price']}元/㎡")
-    if len(results) >= 2:
-        avg = round(sum(i["price"] for i in results) / len(results))
-        lines.append(f"周边{len(results)}盘均价：约{avg}元/㎡")
-    return "\n".join(lines)
-
 
 def find_nearby_commercial(coord: str) -> str:
     """2km内大型商业/文化设施，结果传给 Coze 补充地图盲区。"""
@@ -346,9 +248,6 @@ def call_workflow(station_name, city, district, address, coord, benches=None) ->
     nearby_commercial = find_nearby_commercial(coord)
     if nearby_commercial:
         benchmark_info = benchmark_info + "\n\n" + nearby_commercial
-    nearby_housing = find_nearby_housing_price(coord, city)
-    if nearby_housing:
-        benchmark_info = benchmark_info + "\n\n" + nearby_housing
     try:
         resp = requests.post(
             "https://api.coze.cn/v1/workflow/run",
@@ -528,15 +427,6 @@ if submitted:
                     st.write(f"  · {line.strip()}")
         else:
             st.write("  · 1.5km 内未检索到大型商业/文化设施")
-
-        st.write("🏠 正在查询周边住宅二手房均价（贝壳找房）…")
-        nearby_housing = find_nearby_housing_price(coord, city)
-        if nearby_housing:
-            for line in nearby_housing.split("\n")[1:]:
-                if line.strip():
-                    st.write(f"  · {line.strip()}")
-        else:
-            st.write("  · 未检索到周边小区房价数据（不影响评估）")
 
         # Step 3：调用 Coze 工作流
         st.write("🤖 正在调用 Coze 工作流（含地图视觉分析，通常需要 30–90 秒）…")
