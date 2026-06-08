@@ -349,6 +349,12 @@ with st.form("eval_form"):
     )
     submitted = st.form_submit_button("🚀 开始评估", use_container_width=True, type="primary")
 
+# ── Session State 初始化 ──────────────────────
+if "eval_result" not in st.session_state:
+    st.session_state.eval_result = None   # 评估报告文本
+    st.session_state.eval_meta   = {}     # 站点名/地址/坐标/城市/行政区
+    st.session_state.eval_benches = []    # 对标站点列表
+
 # ── 评估流程 ──────────────────────────────────
 if submitted:
     if not all([f_name, f_addr]):
@@ -433,7 +439,22 @@ if submitted:
         result = call_workflow(f_name, city, district, f_addr, coord, benches)
         status_box.update(label="✅ 评估完成！", state="complete")
 
-    # ── 双视图展示 ────────────────────────────
+    # 保存结果到 session_state，防止标签页切换/重渲染时结果丢失
+    st.session_state.eval_result  = result
+    st.session_state.eval_meta    = {"name": f_name, "addr": f_addr, "coord": coord, "city": city, "district": district}
+    st.session_state.eval_benches = benches
+
+# ── 双视图展示（从 session_state 读取，刷新不丢失）────
+if st.session_state.eval_result:
+    result   = st.session_state.eval_result
+    _meta    = st.session_state.eval_meta
+    f_name   = _meta.get("name", "")
+    f_addr   = _meta.get("addr", "")
+    coord    = _meta.get("coord", "")
+    city     = _meta.get("city", "")
+    district = _meta.get("district", "")
+    benches  = st.session_state.eval_benches
+
     st.divider()
     tab_finance, tab_biz = st.tabs(["📊 财务BP 完整报告", "💼 商务同事视图"])
 
