@@ -10,7 +10,10 @@ import csv
 from pathlib import Path
 
 # ─── 修改这里 ──────────────────────────────────────────────
-INPUT_FILE = Path("/Users/stellachan/Documents/AI Application/租金管理表/AI租金自动评估/换电站选址租金知识库_租金评估结果AI自动化更新.xlsx")
+_BASE     = Path("/Users/stellachan/Documents/AI Application/租金管理表/AI租金自动评估")
+_UPDATED  = _BASE / "换电站选址租金知识库_租金评估结果AI自动化更新_updated.xlsx"
+_ORIGINAL = _BASE / "换电站选址租金知识库_租金评估结果AI自动化更新.xlsx"
+INPUT_FILE = _UPDATED if _UPDATED.exists() else _ORIGINAL
 OUTPUT_CSV = Path(__file__).parent / "benchmarks.csv"   # 输出到 coze网页版/ 目录
 SHEET_NAME = "案例知识库"
 # ───────────────────────────────────────────────────────────
