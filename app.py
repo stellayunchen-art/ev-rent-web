@@ -188,17 +188,18 @@ def find_nearby_commercial(coord: str) -> str:
 
 
 def find_nearby_residential(coord: str) -> str:
-    """500m内命名住宅小区，传给 Coze 防止静态地图将住宅区误判为城中村。"""
-    keywords = "花园|小区|苑|华府|御府|豪庭|嘉园|御园|雅苑|公馆|华城|家园"
+    """500m内命名住宅小区，传给 Coze 防止静态地图将住宅区误判为城中村。
+    使用 types=120302（住宅区）比关键词搜索更稳定，再用名称后缀过滤村庄门牌。"""
     NAME_SUFFIX = [
         "花园", "小区", "苑", "华府", "御府", "豪庭", "嘉园",
         "御园", "雅苑", "公馆", "华城", "家园", "华苑", "锦苑",
+        "庭", "居", "里", "城", "轩", "院",
     ]
-    EXCLUDE = ["停车", "物业", "管理", "幼儿园", "学校", "广场", "商业"]
+    EXCLUDE = ["停车", "物业", "管理", "幼儿园", "学校", "广场", "商业", "号"]
     try:
         r = requests.get(
             "https://restapi.amap.com/v3/place/around",
-            params={"location": coord, "keywords": keywords, "radius": 500,
+            params={"location": coord, "types": "120302", "radius": 500,
                     "sortrule": "distance", "offset": 10, "page": 1,
                     "key": AMAP_KEY, "output": "json"},
             timeout=10,
