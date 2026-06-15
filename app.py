@@ -187,6 +187,34 @@ def find_nearby_commercial(coord: str) -> str:
         return ""
 
 
+def find_nearby_residential(coord: str) -> str:
+    """500m内命名住宅小区，传给 Coze 防止静态地图将住宅区误判为城中村。"""
+    keywords = "花园|小区|苑|华府|御府|豪庭|嘉园|御园|雅苑|公馆|华城|家园"
+    NAME_SUFFIX = [
+        "花园", "小区", "苑", "华府", "御府", "豪庭", "嘉园",
+        "御园", "雅苑", "公馆", "华城", "家园", "华苑", "锦苑",
+    ]
+    EXCLUDE = ["停车", "物业", "管理", "幼儿园", "学校", "广场", "商业"]
+    try:
+        r = requests.get(
+            "https://restapi.amap.com/v3/place/around",
+            params={"location": coord, "keywords": keywords, "radius": 500,
+                    "sortrule": "distance", "offset": 10, "page": 1,
+                    "key": AMAP_KEY, "output": "json"},
+            timeout=10,
+        ).json()
+        pois = r.get("pois") or []
+        pois = [p for p in pois
+                if _kw_at_end(_name_main(str(p.get("name", ""))), NAME_SUFFIX)
+                and not any(ex in str(p.get("name", "")) for ex in EXCLUDE)]
+        if not pois:
+            return ""
+        lines = [f"{p.get('name', '').strip()}（{p.get('distance', '')}m）" for p in pois[:5]]
+        return "【周边住宅小区（高德自动检索，500m内）】\n" + "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def find_benchmarks(coord: str, city: str, station_name: str, df: pd.DataFrame):
     if df.empty:
         return []
@@ -248,6 +276,9 @@ def call_workflow(station_name, city, district, address, coord, benches=None) ->
     nearby_commercial = find_nearby_commercial(coord)
     if nearby_commercial:
         benchmark_info = benchmark_info + "\n\n" + nearby_commercial
+    nearby_residential = find_nearby_residential(coord)
+    if nearby_residential:
+        benchmark_info = benchmark_info + "\n\n" + nearby_residential
     try:
         resp = requests.post(
             "https://api.coze.cn/v1/workflow/run",
@@ -433,6 +464,15 @@ if submitted:
                     st.write(f"  · {line.strip()}")
         else:
             st.write("  · 1.5km 内未检索到大型商业/文化设施")
+
+        st.write("🏘️ 正在查询周边住宅小区（高德 500m 搜索）…")
+        nearby_res = find_nearby_residential(coord)
+        if nearby_res:
+            for line in nearby_res.split("\n")[1:]:
+                if line.strip():
+                    st.write(f"  · {line.strip()}")
+        else:
+            st.write("  · 500m 内未检索到命名住宅小区")
 
         # Step 3：调用 Coze 工作流
         st.write("🤖 正在调用 Coze 工作流（含地图视觉分析，通常需要 30–90 秒）…")
