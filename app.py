@@ -204,6 +204,13 @@ def find_benchmarks(coord: str, city: str, station_name: str, df: pd.DataFrame):
             continue
         if not hw and row_hw:
             continue
+        # 普通站点跳过租金边界为0/空的候选（边界0会把新站边界锚死在0）
+        if not hw:
+            try:
+                if float(str(row.get("bound_rent", "")).replace(",", "") or 0) <= 0:
+                    continue
+            except (ValueError, TypeError):
+                continue
         d = haversine(coord, row["coord"])
         if d < 0.1:   # 100 米内视为同一站点，跳过
             continue
@@ -228,7 +235,7 @@ def format_benchmark_info(benches) -> str:
             ("road_type",  "道路类型"),
         ]:
             v = str(row.get(key, "")).strip()
-            if v and v not in ("nan", ""):
+            if v and v not in ("nan", "", "0", "0.0"):
                 parts.append(f"{label}：{v}")
         lines.append(" | ".join(parts))
     return "\n".join(lines)
