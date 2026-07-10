@@ -472,12 +472,14 @@ def render_report_sections(result: str):
     if current:
         sections.append(current)
 
+    # 默认只展开核心章节，其余折叠，减少视觉压力
+    EXPANDED_SECTIONS = ("💰", "🤝")
     for sec in sections:
         title = sec[0].strip()
         body_lines = [_beautify_line(l) for l in sec[1:]]
-        with st.container(border=True):
-            st.markdown(f"##### {title}")
-            body = "\n".join(l + "  " for l in body_lines if l)
+        body = "\n".join(l + "  " for l in body_lines if l)
+        expanded = any(title.startswith(e) for e in EXPANDED_SECTIONS)
+        with st.expander(title, expanded=expanded):
             if body.strip():
                 st.markdown(body, unsafe_allow_html=True)
 
