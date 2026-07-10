@@ -421,9 +421,46 @@ def call_workflow(station_name, city, district, address, coord, benchmark_info) 
     return _extract_output(resp.get("data", ""))
 
 
+CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩"
+# 单次正则替换（长标签在前，避免"推理依据"被"依据"二次替换）
+BOLD_LABEL_RE = re.compile(r"(推理依据|综合依据|相似点|差异点|谈判起点价|最高报价|合同年限|依据)：")
+
+
+def _beautify_line(line: str) -> str:
+    """单行排版增强：子标题加粗、案例名加粗、关键标签加粗、租金数字高亮。"""
+    stripped = line.strip()
+    if not stripped:
+        return ""
+    # ①②③ 子标题：圈号+短标题部分加粗
+    m = re.match(rf"^([{CIRCLED}])\s*(.*)$", stripped)
+    if m:
+        rest = m.group(2)
+        if "：" in rest:
+            head, tail = rest.split("：", 1)
+            stripped = f"**{m.group(1)} {head}：** {tail}"
+        else:
+            stripped = f"**{m.group(1)} {rest}**"
+    # 参考案例编号行：站点名称加粗
+    m = re.match(r"^(\d+\.\s*)([^：:，,；;]{2,30})(.*)$", stripped)
+    if m and ("站" in m.group(2) or "距离" in m.group(3)[:20]):
+        stripped = f"{m.group(1)}**{m.group(2)}**{m.group(3)}"
+    # 关键标签加粗（单次替换）
+    stripped = BOLD_LABEL_RE.sub(r"**\1：** ", stripped)
+    # 租金数字高亮（红色加粗）
+    stripped = re.sub(
+        r"(?<!\*)(\d[\d,\.]*)\s*(元/车位/月|元/月|元)(?!\*)",
+        r"<span style='color:#d6336c;font-weight:700'>\1\2</span>",
+        stripped,
+    )
+    return stripped
+
+
 def render_report_sections(result: str):
-    """把报告按六个模块拆分，每个模块渲染为一张带边框的卡片。"""
+    """把报告按六个模块拆分，每个模块渲染为一张带边框的卡片，内容做排版增强。"""
     SECTION_EMOJIS = ("📍", "📚", "💡", "💰", "🤝", "🔥")
+    # 圈号子标题若挤在同一行，先强制分行
+    result = re.sub(rf"(?<!\n)\s*([{CIRCLED}])", r"\n\1", result)
+
     sections = []
     current = []
     for line in result.splitlines():
@@ -436,9 +473,13 @@ def render_report_sections(result: str):
         sections.append(current)
 
     for sec in sections:
-        body = "\n".join(l + ("  " if l.strip() else "") for l in sec)
+        title = sec[0].strip()
+        body_lines = [_beautify_line(l) for l in sec[1:]]
         with st.container(border=True):
-            st.markdown(body)
+            st.markdown(f"##### {title}")
+            body = "\n".join(l + "  " for l in body_lines if l)
+            if body.strip():
+                st.markdown(body, unsafe_allow_html=True)
 
 
 def extract_boundary(result: str):
