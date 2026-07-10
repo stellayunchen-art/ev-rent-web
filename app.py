@@ -241,20 +241,95 @@ def format_benchmark_info(benches) -> str:
     return "\n".join(lines)
 
 
-def call_workflow(station_name, city, district, address, coord, benches=None) -> str:
-    """调用 Coze 工作流 API，同步等待返回结果。"""
+def format_report(result: str) -> str:
+    """把报告文本格式化为适合 st.markdown 的形式（分节分隔线+强制换行）。"""
+    SECTION_EMOJIS = ("📍", "📚", "💡", "💰", "🤝", "🔥")
+    formatted_lines = []
+    for line in result.splitlines():
+        stripped = line.lstrip()
+        if any(stripped.startswith(e) for e in SECTION_EMOJIS) and formatted_lines:
+            formatted_lines.append("")
+            formatted_lines.append("---")
+            formatted_lines.append("")
+        formatted_lines.append(line + ("  " if stripped else ""))
+    return "\n".join(formatted_lines)
+
+
+def _extract_output(data) -> str:
+    """从工作流返回的 data 字段提取 output 文本。"""
+    import json as _json
+    try:
+        parsed = _json.loads(data) if isinstance(data, str) else data
+        if isinstance(parsed, dict):
+            for key in ("output", "result", "answer", "content"):
+                if key in parsed:
+                    return str(parsed[key])
+            return str(parsed)
+        return str(parsed)
+    except Exception:
+        return str(data)
+
+
+def call_workflow_stream(station_name, city, district, address, coord, benchmark_info, placeholder):
+    """流式调用 Coze 工作流，边接收边渲染到 placeholder。
+    成功返回完整文本；流式接口异常时返回 None（由调用方回退到非流式）。"""
     import json as _json
     headers = {"Authorization": f"Bearer {COZE_TOKEN}", "Content-Type": "application/json"}
-    benchmark_info = format_benchmark_info(benches or [])
-    nearby_transit = find_nearby_transit(coord)
-    if nearby_transit:
-        benchmark_info = benchmark_info + "\n\n" + nearby_transit
-    nearby_industrial = find_nearby_industrial(coord)
-    if nearby_industrial:
-        benchmark_info = benchmark_info + "\n\n" + nearby_industrial
-    nearby_commercial = find_nearby_commercial(coord)
-    if nearby_commercial:
-        benchmark_info = benchmark_info + "\n\n" + nearby_commercial
+    try:
+        resp = requests.post(
+            "https://api.coze.cn/v1/workflow/stream_run",
+            json={
+                "workflow_id": COZE_WORKFLOW_ID,
+                "parameters": {
+                    "station_name":   station_name,
+                    "address":        address,
+                    "city":           city,
+                    "district":       district,
+                    "coordinates":    coord,
+                    "benchmark_info": benchmark_info,
+                },
+            },
+            headers=headers,
+            timeout=300,
+            stream=True,
+        )
+        if resp.status_code != 200:
+            return None
+
+        full  = ""
+        event = None
+        for raw in resp.iter_lines(decode_unicode=True):
+            if raw is None or raw == "":
+                continue
+            if raw.startswith("event:"):
+                event = raw.split(":", 1)[1].strip()
+            elif raw.startswith("data:"):
+                data_str = raw.split(":", 1)[1].strip()
+                if event == "Message":
+                    try:
+                        d = _json.loads(data_str)
+                        content = d.get("content", "")
+                        if content:
+                            full += content
+                            placeholder.markdown(format_report(_extract_output(full) if full.lstrip().startswith("{") else full) + " ▌")
+                    except Exception:
+                        pass
+                elif event == "Error":
+                    return None
+                elif event == "Done":
+                    break
+        if not full:
+            return None
+        # 内容可能是 {"output": "..."} 的JSON，也可能是纯文本
+        return _extract_output(full) if full.lstrip().startswith("{") else full
+    except Exception:
+        return None
+
+
+def call_workflow(station_name, city, district, address, coord, benchmark_info) -> str:
+    """调用 Coze 工作流 API，同步等待返回结果（非流式，作为回退）。"""
+    import json as _json
+    headers = {"Authorization": f"Bearer {COZE_TOKEN}", "Content-Type": "application/json"}
     try:
         resp = requests.post(
             "https://api.coze.cn/v1/workflow/run",
@@ -280,17 +355,7 @@ def call_workflow(station_name, city, district, address, coord, benches=None) ->
     if resp.get("code") != 0:
         return f"❌ 工作流调用失败（code={resp.get('code')}）：{resp.get('msg', resp)}"
 
-    data = resp.get("data", "")
-    try:
-        parsed = _json.loads(data)
-        if isinstance(parsed, dict):
-            for key in ("output", "result", "answer", "content"):
-                if key in parsed:
-                    return str(parsed[key])
-            return str(parsed)
-        return str(parsed)
-    except Exception:
-        return str(data)
+    return _extract_output(resp.get("data", ""))
 
 
 def extract_key_numbers(result: str):
@@ -441,9 +506,20 @@ if submitted:
         else:
             st.write("  · 1.5km 内未检索到大型商业/文化设施")
 
-        # Step 3：调用 Coze 工作流
-        st.write("🤖 正在调用 Coze 工作流（含地图视觉分析，通常需要 30–90 秒）…")
-        result = call_workflow(f_name, city, district, f_addr, coord, benches)
+        # Step 3：调用 Coze 工作流（流式优先，失败回退非流式）
+        # 复用上面已查询的POI结果，避免重复请求高德API
+        benchmark_info = format_benchmark_info(benches or [])
+        for extra in (nearby_tr, nearby_ind, nearby):
+            if extra:
+                benchmark_info = benchmark_info + "\n\n" + extra
+
+        st.write("🤖 正在调用 Coze 工作流（报告将实时逐字显示）…")
+        stream_placeholder = st.empty()
+        result = call_workflow_stream(f_name, city, district, f_addr, coord, benchmark_info, stream_placeholder)
+        if result is None:
+            st.write("  ⚠️ 流式接口不可用，切换为普通模式（通常需要 30–90 秒）…")
+            result = call_workflow(f_name, city, district, f_addr, coord, benchmark_info)
+        stream_placeholder.empty()
         status_box.update(label="✅ 评估完成！", state="complete")
 
     # 保存结果到 session_state，防止标签页切换/重渲染时结果丢失
@@ -468,19 +544,7 @@ if st.session_state.eval_result:
     # ── 财务BP 视图 ───────────────────────────
     with tab_finance:
         st.subheader("📋 租金评估报告")
-        # Markdown 单换行=空格，需在行尾加两个空格才能强制换行
-        # 章节标题前额外插入 --- 分隔线
-        SECTION_EMOJIS = ("📍", "📚", "💡", "💰", "🤝", "🔥")
-        formatted_lines = []
-        for line in result.splitlines():
-            stripped = line.lstrip()
-            if any(stripped.startswith(e) for e in SECTION_EMOJIS) and formatted_lines:
-                formatted_lines.append("")
-                formatted_lines.append("---")
-                formatted_lines.append("")
-            # 非空行末尾加两个空格，强制 Markdown 保留换行
-            formatted_lines.append(line + ("  " if stripped else ""))
-        st.markdown("\n".join(formatted_lines))
+        st.markdown(format_report(result))
         with st.expander("📋 一键复制纯文本"):
             st.code(result, language=None)
         st.download_button(
