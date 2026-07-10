@@ -241,6 +241,25 @@ def format_benchmark_info(benches) -> str:
     return "\n".join(lines)
 
 
+def static_map_urls(coord: str):
+    """生成 zoom13/14/15 三张高德静态地图URL（与Coze工作流代码节点一致）。"""
+    base = "https://restapi.amap.com/v3/staticmap"
+    marker = f"mid,,A:{coord}"
+    return [
+        (z, f"{base}?location={coord}&zoom={z}&size=500*400&markers={marker}&key={AMAP_KEY}")
+        for z in (13, 14, 15)
+    ]
+
+
+def render_static_maps(coord: str):
+    """三列并排展示站点周边静态地图。"""
+    cols = st.columns(3)
+    captions = {13: "zoom=13 · 城市格局", 14: "zoom=14 · 周边业态", 15: "zoom=15 · 紧邻环境"}
+    for col, (z, url) in zip(cols, static_map_urls(coord)):
+        with col:
+            st.image(url, caption=captions[z], use_container_width=True)
+
+
 def format_report(result: str) -> str:
     """把报告文本格式化为适合 st.markdown 的形式（分节分隔线+强制换行）。"""
     SECTION_EMOJIS = ("📍", "📚", "💡", "💰", "🤝", "🔥")
@@ -468,6 +487,10 @@ if submitted:
                 st.stop()
             st.write(f"✅ 坐标：`{coord}`  |  城市：`{city}`  |  行政区：`{district}`")
 
+        # 站点周边静态地图（立即展示，评估进行时可先人工查看周边环境）
+        st.write("🗺️ 站点周边静态地图：")
+        render_static_maps(coord)
+
         # Step 2：匹配对标站点
         st.write("🔍 正在匹配对标站点（Haversine 直线距离）…")
         df      = load_benchmarks()
@@ -543,6 +566,9 @@ if st.session_state.eval_result:
 
     # ── 财务BP 视图 ───────────────────────────
     with tab_finance:
+        if coord:
+            with st.expander("🗺️ 站点周边静态地图（zoom 13/14/15）", expanded=True):
+                render_static_maps(coord)
         st.subheader("📋 租金评估报告")
         st.markdown(format_report(result))
         with st.expander("📋 一键复制纯文本"):
