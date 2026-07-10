@@ -17,6 +17,50 @@ st.set_page_config(
     layout="centered",
 )
 
+# ── 全局样式 ──────────────────────────────────
+st.markdown("""
+<style>
+/* 主标题横幅 */
+.hero-banner {
+    background: linear-gradient(135deg, #1a2980 0%, #26d0ce 100%);
+    border-radius: 14px;
+    padding: 26px 30px 22px 30px;
+    margin-bottom: 6px;
+    color: #ffffff;
+}
+.hero-banner h1 {
+    margin: 0;
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: #ffffff;
+    letter-spacing: 1px;
+}
+.hero-banner p {
+    margin: 8px 0 0 0;
+    font-size: 0.92rem;
+    color: rgba(255,255,255,0.85);
+}
+/* 指标卡片 */
+div[data-testid="stMetric"] {
+    background: linear-gradient(180deg, #f8faff 0%, #eef3fb 100%);
+    border: 1px solid #dbe4f3;
+    border-radius: 12px;
+    padding: 14px 16px;
+}
+div[data-testid="stMetric"] label { color: #5b6b8c; }
+/* 报告分节卡片内的标题行 */
+.section-title {
+    font-size: 1.02rem;
+    font-weight: 700;
+    margin-bottom: 2px;
+}
+/* 表格圆角 */
+div[data-testid="stTable"] table { border-radius: 10px; overflow: hidden; }
+/* 按钮圆角 */
+.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button { border-radius: 10px; }
+</style>
+""", unsafe_allow_html=True)
+
 # ═══════════════════════════════════════════════
 #  读取 Secrets
 # ═══════════════════════════════════════════════
@@ -377,6 +421,38 @@ def call_workflow(station_name, city, district, address, coord, benchmark_info) 
     return _extract_output(resp.get("data", ""))
 
 
+def render_report_sections(result: str):
+    """把报告按六个模块拆分，每个模块渲染为一张带边框的卡片。"""
+    SECTION_EMOJIS = ("📍", "📚", "💡", "💰", "🤝", "🔥")
+    sections = []
+    current = []
+    for line in result.splitlines():
+        stripped = line.lstrip()
+        if any(stripped.startswith(e) for e in SECTION_EMOJIS) and current:
+            sections.append(current)
+            current = []
+        current.append(line)
+    if current:
+        sections.append(current)
+
+    for sec in sections:
+        body = "\n".join(l + ("  " if l.strip() else "") for l in sec)
+        with st.container(border=True):
+            st.markdown(body)
+
+
+def extract_boundary(result: str):
+    """从报告中提取建议单车位租金边界，失败返回 None。"""
+    for pattern in [
+        r"建议单车位租金边界[^：:\d]*[：:][^\d]*(\d+)\s*元",
+        r"租金边界[^：:\d]*[：:][^\d]*(\d+)\s*元",
+    ]:
+        m = re.search(pattern, result)
+        if m:
+            return m.group(1)
+    return None
+
+
 def extract_key_numbers(result: str):
     """
     从报告 markdown 中提取：目标单车位租金、谈判起点报价。
@@ -411,8 +487,12 @@ def extract_key_numbers(result: str):
 # ═══════════════════════════════════════════════
 #  页面主体
 # ═══════════════════════════════════════════════
-st.title("⚡ 换电站选址租金评估")
-st.caption("输入站点信息 → AI 自动读取地图、匹配对标案例 → 输出完整租金评估报告")
+st.markdown("""
+<div class="hero-banner">
+  <h1>⚡ 换电站选址租金评估</h1>
+  <p>输入站点信息 → AI 自动读取地图、匹配对标案例 → 输出完整租金评估报告</p>
+</div>
+""", unsafe_allow_html=True)
 
 if not COZE_TOKEN:
     st.warning(
@@ -566,11 +646,20 @@ if st.session_state.eval_result:
 
     # ── 财务BP 视图 ───────────────────────────
     with tab_finance:
+        # 关键数字一览
+        _boundary = extract_boundary(result)
+        _target, _opening = extract_key_numbers(result)
+        if any([_boundary, _target, _opening]):
+            c1, c2, c3 = st.columns(3)
+            c1.metric("💰 租金边界（上限）", f"{_boundary} 元" if _boundary else "—")
+            c2.metric("🎯 目标租金", f"{_target} 元" if _target else "—")
+            c3.metric("🤝 谈判起点价", f"{_opening} 元" if _opening else "—")
+
         if coord:
             with st.expander("🗺️ 站点周边静态地图（zoom 13/14/15）", expanded=True):
                 render_static_maps(coord)
         st.subheader("📋 租金评估报告")
-        st.markdown(format_report(result))
+        render_report_sections(result)
         with st.expander("📋 一键复制纯文本"):
             st.code(result, language=None)
         st.download_button(
@@ -586,46 +675,35 @@ if st.session_state.eval_result:
         target_rent, opening_price = extract_key_numbers(result)
 
         # 1. 站点确认
-        st.markdown("#### ✅ 站点确认")
-        st.markdown(f"**站点名称：** {f_name}")
-        st.markdown(f"**地址：** {f_addr}")
-        st.markdown(f"**城市 / 行政区：** {city} · {district}")
-
-        st.divider()
+        with st.container(border=True):
+            st.markdown("#### ✅ 站点确认")
+            st.markdown(f"**站点名称：** {f_name}")
+            st.markdown(f"**地址：** {f_addr}")
+            st.markdown(f"**城市 / 行政区：** {city} · {district}")
 
         # 2. 周边参考站点（距离 + 单车位租金，不显示边界）
-        st.markdown("#### 📍 周边参考站点")
-        if benches:
-            table_rows = []
-            for d_km, row in benches:
-                unit_rent = str(row.get("unit_rent", "")).strip()
-                try:
-                    unit_rent_display = f"{round(float(unit_rent))} 元/月"
-                except (ValueError, TypeError):
-                    unit_rent_display = "—"
-                table_rows.append({
-                    "站点名称":   row["name"],
-                    "直线距离":   f"{round(d_km, 2)} km",
-                    "单车位租金": unit_rent_display if unit_rent and unit_rent != "nan" else "—",
-                })
-            st.table(pd.DataFrame(table_rows))
-        else:
-            st.info("同城市内未找到近距离参考站点")
+        with st.container(border=True):
+            st.markdown("#### 📍 周边参考站点")
+            if benches:
+                table_rows = []
+                for d_km, row in benches:
+                    unit_rent = str(row.get("unit_rent", "")).strip()
+                    try:
+                        unit_rent_display = f"{round(float(unit_rent))} 元/月"
+                    except (ValueError, TypeError):
+                        unit_rent_display = "—"
+                    table_rows.append({
+                        "站点名称":   row["name"],
+                        "直线距离":   f"{round(d_km, 2)} km",
+                        "单车位租金": unit_rent_display if unit_rent and unit_rent != "nan" else "—",
+                    })
+                st.table(pd.DataFrame(table_rows))
+            else:
+                st.info("同城市内未找到近距离参考站点")
 
-        st.divider()
-
-        # 3. 目标单车位租金
-        st.markdown("#### 🎯 目标单车位租金")
-        if target_rent:
-            st.metric(label="AI 建议成交价", value=f"{target_rent} 元/车位/月")
-        else:
-            st.warning("未能自动提取，请查看「财务BP 完整报告」标签页")
-
-        st.divider()
-
-        # 4. 谈判策略
-        st.markdown("#### 🤝 谈判策略")
-        if opening_price:
-            st.markdown(f"**起点报价：** {opening_price} 元/车位/月")
-        else:
-            st.warning("未能自动提取，请查看「财务BP 完整报告」标签页")
+        # 3. 核心数字
+        c1, c2 = st.columns(2)
+        c1.metric("🎯 AI 建议成交价", f"{target_rent} 元/车位/月" if target_rent else "—")
+        c2.metric("🤝 谈判起点报价", f"{opening_price} 元/车位/月" if opening_price else "—")
+        if not target_rent or not opening_price:
+            st.caption("部分数字未能自动提取，请查看「财务BP 完整报告」标签页")
