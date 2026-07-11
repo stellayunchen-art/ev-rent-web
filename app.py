@@ -735,36 +735,17 @@ if st.session_state.eval_result:
                         "成交租金(元)": _num(brow.get("unit_rent")),
                         "租金边界(元)": _num(brow.get("bound_rent")),
                     })
+                # 末行加入本站建议，方便与对标直接比较
+                if _target or _boundary:
+                    rows_.append({
+                        "站点": "★ 本站建议",
+                        "距离(km)": None,
+                        "商圈类型": "—",
+                        "道路条件": "—",
+                        "成交租金(元)": int(_target) if _target else None,
+                        "租金边界(元)": int(_boundary) if _boundary else None,
+                    })
                 st.dataframe(pd.DataFrame(rows_), hide_index=True, use_container_width=True)
-
-                # 柱状图：对标站点 vs 本站建议
-                chart_rows = []
-                for r_ in rows_:
-                    short = r_["站点"][:8]
-                    if r_["成交租金(元)"]:
-                        chart_rows.append({"站点": short, "类型": "成交租金", "金额": r_["成交租金(元)"]})
-                    if r_["租金边界(元)"]:
-                        chart_rows.append({"站点": short, "类型": "租金边界", "金额": r_["租金边界(元)"]})
-                if _target:
-                    chart_rows.append({"站点": "★本站建议", "类型": "成交租金", "金额": int(_target)})
-                if _boundary:
-                    chart_rows.append({"站点": "★本站建议", "类型": "租金边界", "金额": int(_boundary)})
-                if chart_rows:
-                    try:
-                        import altair as alt
-                        _cdf = pd.DataFrame(chart_rows)
-                        chart = alt.Chart(_cdf).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
-                            x=alt.X("站点:N", sort=None, title=None),
-                            y=alt.Y("金额:Q", title="元/车位/月"),
-                            color=alt.Color("类型:N", title=None,
-                                            scale=alt.Scale(domain=["成交租金", "租金边界"],
-                                                            range=["#4c8bf5", "#d6336c"])),
-                            xOffset="类型:N",
-                            tooltip=["站点", "类型", "金额"],
-                        ).properties(height=260)
-                        st.altair_chart(chart, use_container_width=True)
-                    except Exception:
-                        pass
 
         # 周边POI统计（2km，高德实时检索）
         _pois = st.session_state.get("eval_pois") or {}
