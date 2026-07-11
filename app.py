@@ -735,17 +735,21 @@ if st.session_state.eval_result:
                         "成交租金(元)": _num(brow.get("unit_rent")),
                         "租金边界(元)": _num(brow.get("bound_rent")),
                     })
-                # 末行加入本站建议，方便与对标直接比较
+                # 末行加入本站建议（商圈/道路取AI评估结果），方便与对标直接比较
                 if _target or _boundary:
+                    _bc_m   = re.search(r"商圈类型[：:]\s*([^\n，,。；;（(]+)", result)
+                    _road_m = re.search(r"道路条件[：:]\s*([^\n，,。；;（(]+)", result)
                     rows_.append({
                         "站点": "★ 本站建议",
                         "距离(km)": None,
-                        "商圈类型": "—",
-                        "道路条件": "—",
+                        "商圈类型": _bc_m.group(1).strip() if _bc_m else "—",
+                        "道路条件": _road_m.group(1).strip() if _road_m else "—",
                         "成交租金(元)": int(_target) if _target else None,
                         "租金边界(元)": int(_boundary) if _boundary else None,
                     })
-                st.dataframe(pd.DataFrame(rows_), hide_index=True, use_container_width=True)
+                _df_show = pd.DataFrame(rows_)
+                _df_show["距离(km)"] = _df_show["距离(km)"].apply(lambda v: f"{v:.2f}" if isinstance(v, (int, float)) and v is not None else "—")
+                st.dataframe(_df_show, hide_index=True, use_container_width=True)
 
         # 周边POI统计（2km，高德实时检索）
         _pois = st.session_state.get("eval_pois") or {}
@@ -756,15 +760,10 @@ if st.session_state.eval_result:
                 for col, (label, text) in zip(cols, _pois.items()):
                     items = [l.strip() for l in (text or "").split("\n")[1:] if l.strip()]
                     col.metric(label, f"{len(items)} 个")
-                detail_lines = []
-                for label, text in _pois.items():
-                    items = [l.strip() for l in (text or "").split("\n")[1:] if l.strip()]
-                    for it in items:
-                        detail_lines.append(f"- {label.split(' ')[0]} {it}")
-                if detail_lines:
-                    with st.expander("查看明细"):
-                        st.markdown("\n".join(detail_lines))
-                st.caption("注：住宅小区统计因高德接口在海外服务器不可用，暂无法提供")
+                    # 明细小字直接列在数字下方
+                    if items:
+                        col.caption("  \n".join(items))
+                st.caption("注：住宅小区统计因高德接口在海外服务器（Streamlit Cloud）不可用，暂无法提供")
 
         if coord:
             with st.expander("🗺️ 站点周边静态地图（zoom 13/14/15）", expanded=True):
