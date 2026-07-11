@@ -287,6 +287,7 @@ def format_benchmark_info(benches) -> str:
 
 def static_map_urls(coord: str):
     """生成 zoom13/14/15 三张高德静态地图URL（与Coze工作流代码节点一致）。"""
+    coord = str(coord).replace(" ", "").strip()  # 空格会导致高德返回JSON错误
     base = "https://restapi.amap.com/v3/staticmap"
     marker = f"mid,,A:{coord}"
     return [
@@ -582,7 +583,8 @@ if submitted:
 
         # Step 1：坐标（手动输入优先，否则 Geocode）
         # 兼容中文逗号「，」
-        _fc = f_coord.strip().replace("，", ",") if f_coord else ""
+        # 兼容中文逗号和空格（"113.93, 22.54" → "113.93,22.54"），空格会导致高德静态地图报错
+        _fc = f_coord.strip().replace("，", ",").replace(" ", "") if f_coord else ""
         manual_coord = _fc if _fc and "," in _fc else None
 
         if manual_coord:
