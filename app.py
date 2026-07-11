@@ -478,7 +478,16 @@ def render_report_sections(result: str):
     for sec in sections:
         title = sec[0].strip()
         body_lines = [_beautify_line(l) for l in sec[1:]]
-        body = "\n".join(l + "  " for l in body_lines if l)
+        # 子标题（**①…）前插入空行形成独立段落，
+        # 否则会被前面的markdown列表吸收成缩进内容
+        parts = []
+        for l in body_lines:
+            if not l:
+                continue
+            if re.match(rf"^\*\*[{CIRCLED}]", l):
+                parts.append("")
+            parts.append(l + "  ")
+        body = "\n".join(parts)
         expanded = any(title.startswith(e) for e in EXPANDED_SECTIONS)
         with st.expander(title, expanded=expanded):
             if body.strip():
