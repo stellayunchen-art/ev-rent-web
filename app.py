@@ -683,6 +683,7 @@ if submitted:
     st.session_state.eval_result  = result
     st.session_state.eval_meta    = {"name": f_name, "addr": f_addr, "coord": coord, "city": city, "district": district}
     st.session_state.eval_benches = benches
+    st.session_state.eval_pois    = {"🚉 交通枢纽": nearby_tr, "🏭 工业园/产业园": nearby_ind, "🏬 大型商业设施": nearby}
 
 # ── 双视图展示（从 session_state 读取，刷新不丢失）────
 if st.session_state.eval_result:
@@ -708,6 +709,29 @@ if st.session_state.eval_result:
             c1.metric("💰 租金边界（上限）", f"{_boundary} 元" if _boundary else "—")
             c2.metric("🎯 目标租金", f"{_target} 元" if _target else "—")
             c3.metric("🤝 谈判起点价", f"{_opening} 元" if _opening else "—")
+            # 边界锚点一句话摘要（边界定价的核心依据）
+            _anchor = re.search(r"边界锚点[：:]\s*([^\n。；]+)", result)
+            if _anchor:
+                st.caption(f"⚓ 边界锚点：{_anchor.group(1).strip()}")
+
+        # 周边POI统计（2km，高德实时检索）
+        _pois = st.session_state.get("eval_pois") or {}
+        if any(_pois.values()):
+            with st.container(border=True):
+                st.markdown("##### 📡 周边设施统计（2km，高德实时检索）")
+                cols = st.columns(3)
+                for col, (label, text) in zip(cols, _pois.items()):
+                    items = [l.strip() for l in (text or "").split("\n")[1:] if l.strip()]
+                    col.metric(label, f"{len(items)} 个")
+                detail_lines = []
+                for label, text in _pois.items():
+                    items = [l.strip() for l in (text or "").split("\n")[1:] if l.strip()]
+                    for it in items:
+                        detail_lines.append(f"- {label.split(' ')[0]} {it}")
+                if detail_lines:
+                    with st.expander("查看明细"):
+                        st.markdown("\n".join(detail_lines))
+                st.caption("注：住宅小区统计因高德接口在海外服务器不可用，暂无法提供")
 
         if coord:
             with st.expander("🗺️ 站点周边静态地图（zoom 13/14/15）", expanded=True):
