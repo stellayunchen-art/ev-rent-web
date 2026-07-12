@@ -713,26 +713,30 @@ if st.session_state.eval_result:
             # 行政区土地租金标准范围（从报告文本提取）
             _range_m = re.search(r"租金标准[^\d]{0,15}(\d+)\s*[-–~至—]\s*(\d+)", result)
             _range_str = f"{_range_m.group(1)} – {_range_m.group(2)}" if _range_m else "—"
-            # 价格阶梯卡：从行政区标准到谈判起点价逐层递进
-            _ladder = [
-                ("🏛️ 行政区租金标准", _range_str,                      "#f4f7fd", 0),
-                ("💰 租金边界（上限）", _boundary if _boundary else "—", "#e8effc", 1),
-                ("🎯 目标租金",        _target if _target else "—",     "#dce8fb", 2),
-                ("🤝 谈判起点价",      _opening if _opening else "—",   "#cfdff8", 3),
-            ]
-            _rows_html = ""
-            for _lbl, _val, _bg, _lv in _ladder:
-                _rows_html += (
-                    f"<div style='display:flex;justify-content:space-between;align-items:center;"
-                    f"padding:12px 18px 12px {18 + _lv * 26}px;background:{_bg};'>"
-                    f"<span style='color:#44536f;font-size:0.95rem'>{_lbl}</span>"
-                    f"<span style='font-size:1.45rem;font-weight:700;color:#1a2b4a'>{_val}"
-                    f"<span style='font-size:0.8rem;font-weight:400;color:#7a8aa5'>&nbsp;元/车位/月</span></span>"
-                    f"</div>"
-                )
+            # 价格主卡：目标租金居中最大，其余价格自上而下递减
+            _t = _target if _target else "—"
+            _o = _opening if _opening else "—"
+            _b = _boundary if _boundary else "—"
             st.markdown(
-                f"<div style='border:1px solid #dbe4f3;border-radius:12px;overflow:hidden;"
-                f"margin-bottom:10px'>{_rows_html}</div>",
+                f"""
+<div style="background:linear-gradient(135deg,#1e3c72 0%,#2a5298 100%);
+     border-radius:16px;padding:30px 24px 20px;text-align:center;
+     color:#ffffff;margin-bottom:10px">
+  <div style="font-size:0.95rem;color:rgba(255,255,255,0.85)">🎯 建议目标单车位租金</div>
+  <div style="font-size:3.2rem;font-weight:800;line-height:1.2;letter-spacing:1px">¥{_t}</div>
+  <div style="font-size:0.85rem;color:rgba(255,255,255,0.7)">元 / 车位 / 月</div>
+  <div style="margin-top:16px;font-size:1.05rem;color:rgba(255,255,255,0.95)">
+    🤝 谈判起点价&nbsp;<b style="font-size:1.25rem">¥{_o}</b>
+  </div>
+  <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.25);
+       font-size:0.92rem;color:rgba(255,255,255,0.85)">
+    💰 租金边界（上限）<b>¥{_b}</b>
+  </div>
+  <div style="margin-top:8px;font-size:0.85rem;color:rgba(255,255,255,0.65)">
+    🏛️ 行政区租金标准 {_range_str} 元/车位/月
+  </div>
+</div>
+""",
                 unsafe_allow_html=True,
             )
             # 边界锚点一句话摘要（边界定价的核心依据）
