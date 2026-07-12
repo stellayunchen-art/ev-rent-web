@@ -77,6 +77,11 @@ div[data-testid="stMetric"] label { color: #5b6b8c; }
 div[data-testid="stTable"] table { border-radius: 10px; overflow: hidden; }
 /* 按钮圆角 */
 .stButton > button, .stDownloadButton > button, .stFormSubmitButton > button { border-radius: 10px; }
+/* 板块间距：带边框容器之间留出明显空隙 */
+div[data-testid="stVerticalBlockBorderWrapper"] { margin-bottom: 18px; }
+div[data-testid="stVerticalBlockBorderWrapper"] > div { padding: 6px 4px; }
+/* iframe组件与下方内容留距 */
+iframe { margin-bottom: 4px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -841,22 +846,19 @@ if st.session_state.eval_result:
         if coord:
             with st.container(border=True):
                 st.markdown("##### 🗺️ 站点周边与定位")
-                render_static_maps(coord)
-                # 周边环境速览段落（数据来自高德POI检索）
-                _env_segs = []
-                for _lbl, _text in _pois.items():
-                    _items = _poi_items(_text)
-                    _seg = f"{_lbl.split(' ', 1)[-1]}{len(_items)}个"
-                    if _items:
-                        _seg += f"（{'、'.join(_items[:2])}{'等' if len(_items) > 2 else ''}）"
-                    _env_segs.append(_seg)
-                _loc_html = []
-                if _env_segs:
-                    _loc_html.append(
-                        f"<div style='color:#31333F;line-height:1.95;padding-bottom:12px;"
-                        f"border-bottom:1px dashed #dbe4f3'>该站点位于{city} · {district}。"
-                        f"周边2km内：{'；'.join(_env_segs)}。</div>"
+                # 关键特征高亮条（商圈+道路结论一眼可见）
+                _bc_v = re.search(r"商圈类型[：:]\s*([^\n，,。；;（(]+)", result)
+                _rd_v = re.search(r"道路条件[：:]\s*([^\n，,。；;（(]+)", result)
+                if _bc_v or _rd_v:
+                    _feat = " ｜ ".join([x.group(1).strip() for x in (_bc_v, _rd_v) if x])
+                    st.markdown(
+                        f"<div style='background:#e8f1fd;border:1px solid #c9defb;border-radius:10px;"
+                        f"padding:9px 16px;color:#1857b8;font-size:0.98rem;font-weight:600;"
+                        f"margin-bottom:12px'>🟢 {city} · {district} ｜ {_feat}</div>",
+                        unsafe_allow_html=True,
                     )
+                render_static_maps(coord)
+                _loc_html = []
                 # AI站点定位：结论值加粗，依据为灰色小字引用样式
                 for _raw in get_section_lines(result, "📍"):
                     _s = _raw.strip()
@@ -910,10 +912,11 @@ if st.session_state.eval_result:
       <div id="cnt" style="font-size:1.5rem;font-weight:700;color:#1a2b4a">…</div>
     </div>
   </div>
-  <details style="margin-top:8px;font-size:12.5px;color:#808495">
-    <summary style="cursor:pointer;color:#5b6b8c">查看明细</summary>
-    <div style="margin-top:6px;line-height:1.9">{_details_srv}<span id="resdetail"><b>🏘️ 住宅小区</b>：检索中…</span></div>
-  </details>
+  <div style="margin-top:10px;font-size:12.5px;color:#808495;line-height:1.9;
+       max-height:130px;overflow-y:auto;background:#fafbfe;border:1px solid #eef2f9;
+       border-radius:8px;padding:8px 12px">
+    {_details_srv}<span id="resdetail"><b>🏘️ 住宅小区</b>：检索中…</span>
+  </div>
 </div>
 <script>
 async function load() {{
@@ -946,8 +949,8 @@ load().catch(e => {{
 </script>
 """
             import streamlit.components.v1 as components
-            components.html(_strip_html, height=135, scrolling=True)
-            st.caption("📡 周边设施统计：2km范围，前三类高德服务器端检索，住宅小区由浏览器端实时检索；点「查看明细」看完整名单")
+            components.html(_strip_html, height=245, scrolling=True)
+            st.caption("📡 周边设施统计：2km范围，明细列表可上下滚动查看完整名单")
 
         # 对标案例对比（表格+柱状图，数据来自benchmarks匹配，非LLM文本）
         if benches:
