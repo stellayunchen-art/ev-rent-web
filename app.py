@@ -475,9 +475,9 @@ def render_report_sections(result: str):
         sections.append(current)
 
     # 关键结论已在顶部卡片/图表呈现，报告全部折叠作为备查详情
-    # 💡规律归纳同质化、🔥热力值暂不需要 → 不展示；📚参考案例保留（精简版含相似/差异依据）
+    # 💡规律归纳同质化、🔥热力值暂不需要 → 不展示；📍站点定位已在地图下方展示
     EXPANDED_SECTIONS = ()
-    HIDDEN_SECTIONS = ("💡", "🔥")
+    HIDDEN_SECTIONS = ("💡", "🔥", "📍")
     for sec in sections:
         title = sec[0].strip()
         if any(title.startswith(e) for e in HIDDEN_SECTIONS):
@@ -497,6 +497,23 @@ def render_report_sections(result: str):
         with st.expander(title, expanded=expanded):
             if body.strip():
                 st.markdown(body, unsafe_allow_html=True)
+
+
+def get_section_lines(result: str, emoji: str):
+    """提取报告中某个模块（如📍）的内容行（不含标题行）。"""
+    SECTION_EMOJIS = ("📍", "📚", "💡", "💰", "🤝", "🔥")
+    out, started = [], False
+    for line in result.splitlines():
+        s = line.lstrip()
+        if any(s.startswith(e) for e in SECTION_EMOJIS):
+            if s.startswith(emoji):
+                started = True
+                continue
+            elif started:
+                break
+        elif started:
+            out.append(line)
+    return out
 
 
 def extract_boundary(result: str):
@@ -744,6 +761,94 @@ if st.session_state.eval_result:
             if _anchor:
                 st.caption(f"⚓ 边界锚点：{_anchor.group(1).strip()}")
 
+        # ── 站点周边：静态地图 + 站点定位描述（上图下文）──
+        _pois = st.session_state.get("eval_pois") or {}
+
+        def _poi_items(text):
+            return [l.strip() for l in (text or "").split("\n")[1:] if l.strip()]
+
+        if coord:
+            with st.container(border=True):
+                st.markdown("##### 🗺️ 站点周边与定位")
+                render_static_maps(coord)
+                # 周边环境速览段落（数据来自高德POI检索）
+                _env_segs = []
+                for _lbl, _text in _pois.items():
+                    _items = _poi_items(_text)
+                    _seg = f"{_lbl.split(' ', 1)[-1]}{len(_items)}个"
+                    if _items:
+                        _seg += f"（{'、'.join(_items[:2])}{'等' if len(_items) > 2 else ''}）"
+                    _env_segs.append(_seg)
+                if _env_segs:
+                    st.markdown(f"该站点位于**{city} · {district}**。周边2km内：{'；'.join(_env_segs)}。")
+                # AI站点定位（商圈类型/道路条件/地段价值及依据）
+                _loc_lines = [_beautify_line(l) for l in get_section_lines(result, "📍")]
+                _loc_body = "\n".join(l + "  " for l in _loc_lines if l)
+                if _loc_body.strip():
+                    st.markdown(_loc_body, unsafe_allow_html=True)
+
+        # ── 周边设施统计（紧凑横向条：3类服务器端 + 住宅小区浏览器端）──
+        if any(_pois.values()) or coord:
+            _chips_srv = ""
+            _details_srv = ""
+            for _lbl, _text in _pois.items():
+                _items = _poi_items(_text)
+                _chips_srv += (
+                    f"<div style='flex:1;background:linear-gradient(180deg,#f8faff,#eef3fb);"
+                    f"border:1px solid #dbe4f3;border-radius:10px;padding:8px 6px;text-align:center'>"
+                    f"<div style='color:#5b6b8c;font-size:12.5px'>{_lbl}</div>"
+                    f"<div style='font-size:1.5rem;font-weight:700;color:#1a2b4a'>{len(_items)} 个</div></div>"
+                )
+                _details_srv += f"<b>{_lbl}</b>：{'、'.join(_items) if _items else '2km内未检索到'}<br>"
+            _strip_html = f"""
+<div style="font-family:-apple-system,'PingFang SC','Source Sans Pro',sans-serif">
+  <div style="display:flex;gap:10px">
+    {_chips_srv}
+    <div style="flex:1;background:linear-gradient(180deg,#f8faff,#eef3fb);border:1px solid #dbe4f3;
+         border-radius:10px;padding:8px 6px;text-align:center">
+      <div style="color:#5b6b8c;font-size:12.5px">🏘️ 住宅小区</div>
+      <div id="cnt" style="font-size:1.5rem;font-weight:700;color:#1a2b4a">…</div>
+    </div>
+  </div>
+  <details style="margin-top:8px;font-size:12.5px;color:#808495">
+    <summary style="cursor:pointer;color:#5b6b8c">查看明细</summary>
+    <div style="margin-top:6px;line-height:1.9">{_details_srv}<span id="resdetail"><b>🏘️ 住宅小区</b>：检索中…</span></div>
+  </details>
+</div>
+<script>
+async function load() {{
+  const KEY = "{AMAP_KEY}";
+  const coord = "{coord}";
+  let all = [];
+  for (let page = 1; page <= 3; page++) {{
+    const r = await fetch("https://restapi.amap.com/v3/place/around?location=" + coord +
+      "&types=120302&radius=2000&offset=25&page=" + page +
+      "&sortrule=distance&output=json&key=" + KEY);
+    const j = await r.json();
+    if (!j.pois || !j.pois.length) break;
+    all = all.concat(j.pois);
+    if (j.pois.length < 25) break;
+  }}
+  const seen = new Set();
+  const items = all.filter(p => {{
+    if (seen.has(p.name)) return false;
+    seen.add(p.name); return true;
+  }});
+  document.getElementById("cnt").innerHTML = items.length + " 个";
+  document.getElementById("resdetail").innerHTML = "<b>🏘️ 住宅小区</b>：" +
+    (items.length ? items.slice(0, 30).map(p => p.name + "（" + p.distance + "m）").join("、") +
+      (items.length > 30 ? " …等共" + items.length + "个" : "") : "2km内未检索到");
+}}
+load().catch(e => {{
+  document.getElementById("cnt").innerHTML = "—";
+  document.getElementById("resdetail").innerHTML = "<b>🏘️ 住宅小区</b>：检索失败";
+}});
+</script>
+"""
+            import streamlit.components.v1 as components
+            components.html(_strip_html, height=135, scrolling=True)
+            st.caption("📡 周边设施统计：2km范围，前三类高德服务器端检索，住宅小区由浏览器端实时检索；点「查看明细」看完整名单")
+
         # 对标案例对比（表格+柱状图，数据来自benchmarks匹配，非LLM文本）
         if benches:
             with st.container(border=True):
@@ -791,67 +896,8 @@ if st.session_state.eval_result:
                 st.dataframe(_df_show, hide_index=True, use_container_width=True)
                 st.caption("⚠️早期 = 2025年上半年及以前过会，早期建站未严格管控租金，成交租金不具参考性，仅边界可参考")
 
-        # 周边POI统计（2km，高德实时检索）
-        _pois = st.session_state.get("eval_pois") or {}
-        if any(_pois.values()):
-            with st.container(border=True):
-                st.markdown("##### 📡 周边设施统计（2km，高德实时检索）")
-                cols = st.columns(3)
-                for col, (label, text) in zip(cols, _pois.items()):
-                    items = [l.strip() for l in (text or "").split("\n")[1:] if l.strip()]
-                    col.metric(label, f"{len(items)} 个")
-                    # 明细小字直接列在数字下方
-                    if items:
-                        col.caption("  \n".join(items))
-                # 住宅小区：服务器在海外调不通高德，改为浏览器端（国内网络）实时检索
-                st.markdown("**🏘️ 住宅小区（2km，浏览器端实时检索）**")
-                _res_html = f"""
-                <div id="res" style="font-family:-apple-system,'PingFang SC',sans-serif;
-                     font-size:14px;color:#31333F;padding:2px 0">检索中…</div>
-                <script>
-                async function load() {{
-                  const KEY = "{AMAP_KEY}";
-                  const coord = "{coord}";
-                  let all = [];
-                  for (let page = 1; page <= 3; page++) {{
-                    const r = await fetch("https://restapi.amap.com/v3/place/around?location=" + coord +
-                      "&types=120302&radius=2000&offset=25&page=" + page +
-                      "&sortrule=distance&output=json&key=" + KEY);
-                    const j = await r.json();
-                    if (!j.pois || !j.pois.length) break;
-                    all = all.concat(j.pois);
-                    if (j.pois.length < 25) break;
-                  }}
-                  const seen = new Set();
-                  const items = all.filter(p => {{
-                    if (seen.has(p.name)) return false;
-                    seen.add(p.name); return true;
-                  }});
-                  const el = document.getElementById("res");
-                  if (!items.length) {{
-                    el.innerHTML = "2km 内未检索到住宅小区";
-                    return;
-                  }}
-                  el.innerHTML = "<span style='font-size:1.6rem;font-weight:700;color:#1a2b4a'>" +
-                    items.length + " 个</span>" +
-                    "<div style='color:#808495;font-size:12px;margin-top:6px;line-height:1.9'>" +
-                    items.slice(0, 15).map(p => p.name + "（" + p.distance + "m）").join("<br>") +
-                    (items.length > 15 ? "<br>…等共 " + items.length + " 个" : "") + "</div>";
-                }}
-                load().catch(e => {{
-                  document.getElementById("res").innerHTML =
-                    "检索失败（浏览器网络无法访问高德）：" + e;
-                }});
-                </script>
-                """
-                import streamlit.components.v1 as components
-                components.html(_res_html, height=300)
-
-        if coord:
-            with st.expander("🗺️ 站点周边静态地图（zoom 13/14/15）", expanded=True):
-                render_static_maps(coord)
         st.subheader("📋 评估报告详情")
-        st.caption("关键结论已在上方卡片和图表呈现，以下为AI完整分析过程，点击各节展开查看")
+        st.caption("站点定位已在上方地图区展示，以下为参考案例与租金建议的完整推理，点击各节展开查看")
         render_report_sections(result)
         # 组装完整纯文本：站点信息 + 关键价格 + 对标案例 + AI报告
         _full_lines = [
