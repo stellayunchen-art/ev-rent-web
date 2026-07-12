@@ -475,9 +475,9 @@ def render_report_sections(result: str):
         sections.append(current)
 
     # 关键结论已在顶部卡片/图表呈现，报告全部折叠作为备查详情
-    # 📚参考案例已由对标表格取代、💡规律归纳同质化、🔥热力值暂不需要 → 不展示
+    # 💡规律归纳同质化、🔥热力值暂不需要 → 不展示；📚参考案例保留（精简版含相似/差异依据）
     EXPANDED_SECTIONS = ()
-    HIDDEN_SECTIONS = ("📚", "💡", "🔥")
+    HIDDEN_SECTIONS = ("💡", "🔥")
     for sec in sections:
         title = sec[0].strip()
         if any(title.startswith(e) for e in HIDDEN_SECTIONS):
@@ -790,11 +790,42 @@ if st.session_state.eval_result:
         st.subheader("📋 评估报告详情")
         st.caption("关键结论已在上方卡片和图表呈现，以下为AI完整分析过程，点击各节展开查看")
         render_report_sections(result)
+        # 组装完整纯文本：站点信息 + 关键价格 + 对标案例 + AI报告
+        _full_lines = [
+            f"站点：{f_name}",
+            f"地址：{f_addr}",
+            f"坐标：{coord}",
+            f"城市：{city}  行政区：{district}",
+        ]
+        if any([_boundary, _target, _opening]):
+            _full_lines += ["", "【关键价格】"]
+            _rm = re.search(r"租金标准[^\d]{0,15}(\d+)\s*[-–~至—]\s*(\d+)", result)
+            if _rm:
+                _full_lines.append(f"行政区租金标准：{_rm.group(1)}-{_rm.group(2)}元/车位/月")
+            if _boundary:
+                _full_lines.append(f"建议租金边界：{_boundary}元/车位/月")
+            if _target:
+                _full_lines.append(f"目标租金：{_target}元/车位/月")
+            if _opening:
+                _full_lines.append(f"谈判起点价：{_opening}元/车位/月")
+        if benches:
+            _full_lines += ["", "【对标案例】"]
+            for _i, (_d, _b) in enumerate(benches, 1):
+                _ad = str(_b.get("audit_date", "") or "").strip()[:10]
+                _early = "（⚠️早期，成交租金不参考）" if _ad and _ad <= "2025-06-30" else ""
+                _full_lines.append(
+                    f"{_i}. {_b['name']}｜距离{_d:.2f}km｜内审{_ad or '—'}{_early}｜"
+                    f"{_b.get('bc_type', '') or '—'}｜{_b.get('road_cond', '') or '—'}｜"
+                    f"成交{_b.get('unit_rent', '') or '—'}元｜边界{_b.get('bound_rent', '') or '—'}元"
+                )
+        _full_lines += ["", "【AI评估报告】", result]
+        full_text = "\n".join(_full_lines)
+
         with st.expander("📋 一键复制纯文本"):
-            st.code(result, language=None)
+            st.code(full_text, language=None)
         st.download_button(
             label="💾 下载报告（.txt）",
-            data=f"站点：{f_name}\n地址：{f_addr}\n坐标：{coord}\n城市：{city}  行政区：{district}\n\n{result}",
+            data=full_text,
             file_name=f"租金评估_{f_name}.txt",
             mime="text/plain",
             use_container_width=True,
