@@ -20,28 +20,45 @@ st.set_page_config(
 # ── 全局样式 ──────────────────────────────────
 st.markdown("""
 <style>
-/* 主标题横幅（浅色卡片风格，与深蓝价格卡区分） */
+/* 主标题横幅（浅色卡片+图标徽章+流程胶囊） */
 .hero-banner {
-    background: linear-gradient(180deg, #ffffff 0%, #f2f6fd 100%);
-    border: 1px solid #dbe4f3;
-    border-left: 6px solid #e63946;
-    border-radius: 14px;
-    padding: 24px 30px 20px 30px;
+    background: linear-gradient(180deg, #ffffff 0%, #f4f8fe 100%);
+    border: 1px solid #e3eaf6;
+    border-radius: 16px;
+    padding: 22px 26px;
     margin-bottom: 6px;
-    color: #1a2b4a;
+    box-shadow: 0 2px 10px rgba(26,43,74,0.06);
+    display: flex;
+    align-items: center;
+    gap: 18px;
+}
+.hero-icon {
+    width: 58px; height: 58px; flex-shrink: 0;
+    background: linear-gradient(135deg, #ff5f6d 0%, #ffc371 100%);
+    border-radius: 15px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 30px;
+    box-shadow: 0 4px 12px rgba(255,95,109,0.35);
 }
 .hero-banner h1 {
     margin: 0;
-    font-size: 1.75rem;
-    font-weight: 700;
+    font-size: 1.6rem;
+    font-weight: 800;
     color: #1a2b4a;
     letter-spacing: 1px;
 }
-.hero-banner p {
-    margin: 8px 0 0 0;
-    font-size: 0.92rem;
-    color: #5b6b8c;
+.hero-steps {
+    margin-top: 9px;
+    display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
 }
+.hero-steps span.step {
+    background: #eef3fb;
+    color: #44536f;
+    border-radius: 999px;
+    padding: 3px 12px;
+    font-size: 0.78rem;
+}
+.hero-steps span.arrow { color: #b0bdd4; font-size: 0.8rem; }
 /* 指标卡片 */
 div[data-testid="stMetric"] {
     background: linear-gradient(180deg, #f8faff 0%, #eef3fb 100%);
@@ -70,9 +87,12 @@ div[data-testid="stTable"] table { border-radius: 10px; overflow: hidden; }
 USERS = st.secrets.get("users", {})
 if USERS and not st.session_state.get("auth_user"):
     st.markdown("""
-<div class="hero-banner" style="text-align:center">
-  <h1>⚡ 换电站选址租金评估</h1>
-  <p>内部系统 · 请登录后使用</p>
+<div class="hero-banner" style="justify-content:center">
+  <div class="hero-icon">⚡</div>
+  <div>
+    <h1>换电站选址租金评估</h1>
+    <div class="hero-steps"><span class="step">🔒 内部系统 · 请登录后使用</span></div>
+  </div>
 </div>
 """, unsafe_allow_html=True)
     _, _mid, _ = st.columns([1, 2, 1])
@@ -602,8 +622,15 @@ def extract_key_numbers(result: str):
 # ═══════════════════════════════════════════════
 st.markdown("""
 <div class="hero-banner">
-  <h1>⚡ 换电站选址租金评估</h1>
-  <p>输入站点信息 → AI 自动读取地图、匹配对标案例 → 输出完整租金评估报告</p>
+  <div class="hero-icon">⚡</div>
+  <div>
+    <h1>换电站选址租金评估</h1>
+    <div class="hero-steps">
+      <span class="step">📝 输入站点信息</span><span class="arrow">→</span>
+      <span class="step">🤖 AI读图 · 匹配对标案例</span><span class="arrow">→</span>
+      <span class="step">📊 输出租金评估报告</span>
+    </div>
+  </div>
 </div>
 """, unsafe_allow_html=True)
 
