@@ -448,9 +448,9 @@ def _beautify_line(line: str) -> str:
         stripped = f"{m.group(1)}**{m.group(2)}**{m.group(3)}"
     # 关键标签加粗（单次替换）
     stripped = BOLD_LABEL_RE.sub(r"**\1：** ", stripped)
-    # 租金数字高亮（红色加粗）
+    # 租金数字高亮（红色加粗），支持区间如"900-1300元/车位/月"
     stripped = re.sub(
-        r"(?<!\*)(\d[\d,\.]*)\s*(元/车位/月|元/月|元)(?!\*)",
+        r"(?<!\*)(\d[\d,\.]*(?:\s*[-–~—]\s*\d[\d,\.]*)?)\s*(元/车位/月|元/月|元)(?!\*)",
         r"<span style='color:#d6336c;font-weight:700'>\1\2</span>",
         stripped,
     )
@@ -799,7 +799,49 @@ if st.session_state.eval_result:
                     # 明细小字直接列在数字下方
                     if items:
                         col.caption("  \n".join(items))
-                st.caption("注：住宅小区统计因高德接口在海外服务器（Streamlit Cloud）不可用，暂无法提供")
+                # 住宅小区：服务器在海外调不通高德，改为浏览器端（国内网络）实时检索
+                st.markdown("**🏘️ 住宅小区（2km，浏览器端实时检索）**")
+                _res_html = f"""
+                <div id="res" style="font-family:-apple-system,'PingFang SC',sans-serif;
+                     font-size:14px;color:#31333F;padding:2px 0">检索中…</div>
+                <script>
+                async function load() {{
+                  const KEY = "{AMAP_KEY}";
+                  const coord = "{coord}";
+                  let all = [];
+                  for (let page = 1; page <= 3; page++) {{
+                    const r = await fetch("https://restapi.amap.com/v3/place/around?location=" + coord +
+                      "&types=120302&radius=2000&offset=25&page=" + page +
+                      "&sortrule=distance&output=json&key=" + KEY);
+                    const j = await r.json();
+                    if (!j.pois || !j.pois.length) break;
+                    all = all.concat(j.pois);
+                    if (j.pois.length < 25) break;
+                  }}
+                  const seen = new Set();
+                  const items = all.filter(p => {{
+                    if (seen.has(p.name)) return false;
+                    seen.add(p.name); return true;
+                  }});
+                  const el = document.getElementById("res");
+                  if (!items.length) {{
+                    el.innerHTML = "2km 内未检索到住宅小区";
+                    return;
+                  }}
+                  el.innerHTML = "<span style='font-size:1.6rem;font-weight:700;color:#1a2b4a'>" +
+                    items.length + " 个</span>" +
+                    "<div style='color:#808495;font-size:12px;margin-top:6px;line-height:1.9'>" +
+                    items.slice(0, 15).map(p => p.name + "（" + p.distance + "m）").join("<br>") +
+                    (items.length > 15 ? "<br>…等共 " + items.length + " 个" : "") + "</div>";
+                }}
+                load().catch(e => {{
+                  document.getElementById("res").innerHTML =
+                    "检索失败（浏览器网络无法访问高德）：" + e;
+                }});
+                </script>
+                """
+                import streamlit.components.v1 as components
+                components.html(_res_html, height=300)
 
         if coord:
             with st.expander("🗺️ 站点周边静态地图（zoom 13/14/15）", expanded=True):
