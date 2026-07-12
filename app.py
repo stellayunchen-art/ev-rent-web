@@ -712,12 +712,29 @@ if st.session_state.eval_result:
         if any([_boundary, _target, _opening]):
             # 行政区土地租金标准范围（从报告文本提取）
             _range_m = re.search(r"租金标准[^\d]{0,15}(\d+)\s*[-–~至—]\s*(\d+)", result)
-            _range_str = f"{_range_m.group(1)}–{_range_m.group(2)}" if _range_m else "—"
-            c0, c1, c2, c3 = st.columns(4)
-            c0.metric("🏛️ 行政区标准(元)", _range_str)
-            c1.metric("💰 租金边界(元)", _boundary if _boundary else "—")
-            c2.metric("🎯 目标租金(元)", _target if _target else "—")
-            c3.metric("🤝 谈判起点价(元)", _opening if _opening else "—")
+            _range_str = f"{_range_m.group(1)} – {_range_m.group(2)}" if _range_m else "—"
+            # 价格阶梯卡：从行政区标准到谈判起点价逐层递进
+            _ladder = [
+                ("🏛️ 行政区租金标准", _range_str,                      "#f4f7fd", 0),
+                ("💰 租金边界（上限）", _boundary if _boundary else "—", "#e8effc", 1),
+                ("🎯 目标租金",        _target if _target else "—",     "#dce8fb", 2),
+                ("🤝 谈判起点价",      _opening if _opening else "—",   "#cfdff8", 3),
+            ]
+            _rows_html = ""
+            for _lbl, _val, _bg, _lv in _ladder:
+                _rows_html += (
+                    f"<div style='display:flex;justify-content:space-between;align-items:center;"
+                    f"padding:12px 18px 12px {18 + _lv * 26}px;background:{_bg};'>"
+                    f"<span style='color:#44536f;font-size:0.95rem'>{_lbl}</span>"
+                    f"<span style='font-size:1.45rem;font-weight:700;color:#1a2b4a'>{_val}"
+                    f"<span style='font-size:0.8rem;font-weight:400;color:#7a8aa5'>&nbsp;元/车位/月</span></span>"
+                    f"</div>"
+                )
+            st.markdown(
+                f"<div style='border:1px solid #dbe4f3;border-radius:12px;overflow:hidden;"
+                f"margin-bottom:10px'>{_rows_html}</div>",
+                unsafe_allow_html=True,
+            )
             # 边界锚点一句话摘要（边界定价的核心依据）
             _anchor = re.search(r"边界锚点[：:]\s*([^\n。；]+)", result)
             if _anchor:
