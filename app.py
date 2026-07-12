@@ -815,13 +815,42 @@ if st.session_state.eval_result:
                     if _items:
                         _seg += f"（{'、'.join(_items[:2])}{'等' if len(_items) > 2 else ''}）"
                     _env_segs.append(_seg)
+                _loc_html = []
                 if _env_segs:
-                    st.markdown(f"该站点位于**{city} · {district}**。周边2km内：{'；'.join(_env_segs)}。")
-                # AI站点定位（商圈类型/道路条件/地段价值及依据）
-                _loc_lines = [_beautify_line(l) for l in get_section_lines(result, "📍")]
-                _loc_body = "\n".join(l + "  " for l in _loc_lines if l)
-                if _loc_body.strip():
-                    st.markdown(_loc_body, unsafe_allow_html=True)
+                    _loc_html.append(
+                        f"<div style='color:#31333F;line-height:1.95;padding-bottom:12px;"
+                        f"border-bottom:1px dashed #dbe4f3'>该站点位于{city} · {district}。"
+                        f"周边2km内：{'；'.join(_env_segs)}。</div>"
+                    )
+                # AI站点定位：结论值加粗，依据为灰色小字引用样式
+                for _raw in get_section_lines(result, "📍"):
+                    _s = _raw.strip()
+                    if not _s:
+                        continue
+                    _m = re.match(r"^(商圈类型|道路条件)[：:]\s*(.+)$", _s)
+                    if _m:
+                        _loc_html.append(
+                            f"<div style='margin-top:14px;color:#44536f'>{_m.group(1)}："
+                            f"<b style='font-size:1.08rem;color:#1a2b4a'>{_m.group(2)}</b></div>"
+                        )
+                        continue
+                    _m = re.match(r"^依据[：:]\s*(.+)$", _s)
+                    if _m:
+                        _loc_html.append(
+                            f"<div style='margin-top:5px;padding-left:12px;border-left:3px solid #dbe4f3;"
+                            f"color:#6b7a94;font-size:0.88rem;line-height:1.8'>{_m.group(1)}</div>"
+                        )
+                        continue
+                    _m = re.match(r"^地段价值[：:]\s*(.+)$", _s)
+                    if _m:
+                        _loc_html.append(
+                            f"<div style='margin-top:14px;color:#44536f'>地段价值："
+                            f"<b style='color:#1a2b4a'>{_m.group(1)}</b></div>"
+                        )
+                        continue
+                    _loc_html.append(f"<div style='margin-top:6px;color:#31333F;line-height:1.9'>{_s}</div>")
+                if _loc_html:
+                    st.markdown("".join(_loc_html), unsafe_allow_html=True)
 
         # ── 周边设施统计（紧凑横向条：3类服务器端 + 住宅小区浏览器端）──
         if any(_pois.values()) or coord:
