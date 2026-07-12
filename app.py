@@ -20,25 +20,27 @@ st.set_page_config(
 # ── 全局样式 ──────────────────────────────────
 st.markdown("""
 <style>
-/* 主标题横幅 */
+/* 主标题横幅（浅色卡片风格，与深蓝价格卡区分） */
 .hero-banner {
-    background: linear-gradient(135deg, #1a2980 0%, #26d0ce 100%);
+    background: linear-gradient(180deg, #ffffff 0%, #f2f6fd 100%);
+    border: 1px solid #dbe4f3;
+    border-left: 6px solid #e63946;
     border-radius: 14px;
-    padding: 26px 30px 22px 30px;
+    padding: 24px 30px 20px 30px;
     margin-bottom: 6px;
-    color: #ffffff;
+    color: #1a2b4a;
 }
 .hero-banner h1 {
     margin: 0;
     font-size: 1.75rem;
     font-weight: 700;
-    color: #ffffff;
+    color: #1a2b4a;
     letter-spacing: 1px;
 }
 .hero-banner p {
     margin: 8px 0 0 0;
     font-size: 0.92rem;
-    color: rgba(255,255,255,0.85);
+    color: #5b6b8c;
 }
 /* 指标卡片 */
 div[data-testid="stMetric"] {
@@ -511,9 +513,9 @@ def render_report_sections(result: str):
         sections.append(current)
 
     # 关键结论已在顶部卡片/图表呈现，报告全部折叠作为备查详情
-    # 💡规律归纳同质化、🔥热力值暂不需要 → 不展示；📍站点定位已在地图下方展示
+    # 💡规律归纳同质化、🔥热力值暂不需要；📍站点定位已在地图区、💰租金建议已在价格卡+锚点推理展示
     EXPANDED_SECTIONS = ()
-    HIDDEN_SECTIONS = ("💡", "🔥", "📍")
+    HIDDEN_SECTIONS = ("💡", "🔥", "📍", "💰")
     for sec in sections:
         title = sec[0].strip()
         if any(title.startswith(e) for e in HIDDEN_SECTIONS):
@@ -792,10 +794,16 @@ if st.session_state.eval_result:
 """,
                 unsafe_allow_html=True,
             )
-            # 边界锚点一句话摘要（边界定价的核心依据）
+            # 边界锚点+推理依据小字摘要（定价的核心依据）
             _anchor = re.search(r"边界锚点[：:]\s*([^\n。；]+)", result)
             if _anchor:
                 st.caption(f"⚓ 边界锚点：{_anchor.group(1).strip()}")
+            _br = re.search(r"边界推理依据[：:]\s*([^\n]+)", result)
+            if _br:
+                st.caption(f"💰 边界推理依据：{_br.group(1).strip()}")
+            _tr = re.search(r"目标价推理依据[：:]\s*([^\n]+)", result)
+            if _tr:
+                st.caption(f"🎯 目标价推理依据：{_tr.group(1).strip()}")
 
         # ── 站点周边：静态地图 + 站点定位描述（上图下文）──
         _pois = st.session_state.get("eval_pois") or {}
@@ -971,8 +979,24 @@ load().catch(e => {{
             f"坐标：{coord}",
             f"城市：{city}  行政区：{district}",
         ]
-        if any([_boundary, _target, _opening]):
-            _full_lines += ["", "【关键价格】"]
+        # 按模块拆分报告：💰租金建议提前，其余作为AI评估报告，避免重复
+        _SECTION_E = ("📍", "📚", "💡", "💰", "🤝", "🔥")
+        _secs, _cur = [], []
+        for _line in result.splitlines():
+            _s = _line.lstrip()
+            if any(_s.startswith(_e) for _e in _SECTION_E) and _cur:
+                _secs.append(_cur)
+                _cur = []
+            _cur.append(_line)
+        if _cur:
+            _secs.append(_cur)
+        _money_sec = next((sec for sec in _secs if sec[0].lstrip().startswith("💰")), None)
+        _rest_txt  = "\n".join("\n".join(sec) for sec in _secs if not sec[0].lstrip().startswith("💰"))
+
+        if _money_sec:
+            _full_lines += ["", "【租金建议】"] + [l for l in _money_sec[1:] if l.strip()]
+        elif any([_boundary, _target, _opening]):
+            _full_lines += ["", "【租金建议】"]
             _rm = re.search(r"租金标准[^\d]{0,15}(\d+)\s*[-–~至—]\s*(\d+)", result)
             if _rm:
                 _full_lines.append(f"行政区租金标准：{_rm.group(1)}-{_rm.group(2)}元/车位/月")
@@ -982,6 +1006,8 @@ load().catch(e => {{
                 _full_lines.append(f"目标租金：{_target}元/车位/月")
             if _opening:
                 _full_lines.append(f"谈判起点价：{_opening}元/车位/月")
+        if _rest_txt.strip():
+            _full_lines += ["", "【AI评估报告】", _rest_txt]
         if benches:
             _full_lines += ["", "【对标案例】"]
             for _i, (_d, _b) in enumerate(benches, 1):
@@ -992,7 +1018,6 @@ load().catch(e => {{
                     f"{_b.get('bc_type', '') or '—'}｜{_b.get('road_cond', '') or '—'}｜"
                     f"成交{_b.get('unit_rent', '') or '—'}元｜边界{_b.get('bound_rent', '') or '—'}元"
                 )
-        _full_lines += ["", "【AI评估报告】", result]
         full_text = "\n".join(_full_lines)
 
         with st.expander("📋 一键复制纯文本"):
