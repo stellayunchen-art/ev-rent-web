@@ -62,6 +62,42 @@ div[data-testid="stTable"] table { border-radius: 10px; overflow: hidden; }
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════
+#  登录门禁（账号=手机号，密码由管理员在Secrets中分配）
+#  Secrets中无[users]配置时不启用登录（本地调试友好）
+# ═══════════════════════════════════════════════
+USERS = st.secrets.get("users", {})
+if USERS and not st.session_state.get("auth_user"):
+    st.markdown("""
+<div class="hero-banner" style="text-align:center">
+  <h1>⚡ 换电站选址租金评估</h1>
+  <p>内部系统 · 请登录后使用</p>
+</div>
+""", unsafe_allow_html=True)
+    _, _mid, _ = st.columns([1, 2, 1])
+    with _mid:
+        with st.form("login_form"):
+            _phone = st.text_input("📱 手机号", placeholder="请输入手机号")
+            _pwd   = st.text_input("🔑 密码", type="password", placeholder="请输入密码")
+            _login = st.form_submit_button("登 录", use_container_width=True, type="primary")
+        if _login:
+            import hmac as _hmac
+            _real = USERS.get(_phone.strip())
+            if _real and _hmac.compare_digest(str(_real), _pwd):
+                st.session_state.auth_user = _phone.strip()
+                st.rerun()
+            else:
+                st.error("手机号或密码错误。如需开通权限，请联系财务BP")
+        st.caption("账号权限由财务BP统一管理")
+    st.stop()
+
+if USERS:
+    with st.sidebar:
+        st.caption(f"👤 已登录：{st.session_state.auth_user}")
+        if st.button("退出登录", use_container_width=True):
+            st.session_state.auth_user = None
+            st.rerun()
+
+# ═══════════════════════════════════════════════
 #  读取 Secrets
 # ═══════════════════════════════════════════════
 AMAP_KEY         = st.secrets.get("AMAP_KEY",         "ce2119b87985d25e49cff4c05c6938ff")
