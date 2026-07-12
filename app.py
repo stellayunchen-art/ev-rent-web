@@ -712,12 +712,12 @@ if st.session_state.eval_result:
         if any([_boundary, _target, _opening]):
             # 行政区土地租金标准范围（从报告文本提取）
             _range_m = re.search(r"租金标准[^\d]{0,15}(\d+)\s*[-–~至—]\s*(\d+)", result)
-            _range_str = f"{_range_m.group(1)}–{_range_m.group(2)} 元" if _range_m else "—"
+            _range_str = f"{_range_m.group(1)}–{_range_m.group(2)}" if _range_m else "—"
             c0, c1, c2, c3 = st.columns(4)
-            c0.metric("🏛️ 行政区租金标准", _range_str)
-            c1.metric("💰 租金边界（上限）", f"{_boundary} 元" if _boundary else "—")
-            c2.metric("🎯 目标租金", f"{_target} 元" if _target else "—")
-            c3.metric("🤝 谈判起点价", f"{_opening} 元" if _opening else "—")
+            c0.metric("🏛️ 行政区标准(元)", _range_str)
+            c1.metric("💰 租金边界(元)", _boundary if _boundary else "—")
+            c2.metric("🎯 目标租金(元)", _target if _target else "—")
+            c3.metric("🤝 谈判起点价(元)", _opening if _opening else "—")
             # 边界锚点一句话摘要（边界定价的核心依据）
             _anchor = re.search(r"边界锚点[：:]\s*([^\n。；]+)", result)
             if _anchor:
