@@ -20,6 +20,7 @@ SHEET_NAME = "案例知识库"
 
 # 列索引（1-based，与 update_new_stations_v2.py 保持一致）
 C_NAME  = 2   # B 站点名称
+C_DATE  = 4   # D 内审日期
 C_CITY  = 6   # F 城市
 C_COORD = 9   # I 坐标
 C_BC    = 10  # J 商圈类型
@@ -31,7 +32,7 @@ C_UNIT  = 15  # O 单车位租金
 C_BOUND = 16  # P 单车位租金边界
 DATA_START = 2
 
-FIELDS = ["name", "city", "coord", "bc_type", "area_type", "road_cond", "road_type", "unit_rent", "bound_rent"]
+FIELDS = ["name", "city", "coord", "bc_type", "area_type", "road_cond", "road_type", "unit_rent", "bound_rent", "audit_date"]
 
 
 def safe(v) -> str:
@@ -79,6 +80,7 @@ def main():
             "road_type": safe(ws.cell(r, C_ROADT).value),
             "unit_rent": safe(ws.cell(r, C_UNIT).value),
             "bound_rent":safe(ws.cell(r, C_BOUND).value),
+            "audit_date":safe(ws.cell(r, C_DATE).value)[:10],  # 内审日期，仅保留年月日
         })
 
     with open(OUTPUT_CSV, "w", newline="", encoding="utf-8-sig") as f:

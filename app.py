@@ -273,6 +273,7 @@ def format_benchmark_info(benches) -> str:
         for key, label in [
             ("unit_rent",  "单车位租金"),
             ("bound_rent", "租金边界"),
+            ("audit_date", "内审日期"),
             ("bc_type",    "商圈类型"),
             ("area_type",  "区域类型"),
             ("road_cond",  "道路条件"),
@@ -474,9 +475,13 @@ def render_report_sections(result: str):
         sections.append(current)
 
     # 关键结论已在顶部卡片/图表呈现，报告全部折叠作为备查详情
+    # 📚参考案例已由对标表格取代、💡规律归纳同质化、🔥热力值暂不需要 → 不展示
     EXPANDED_SECTIONS = ()
+    HIDDEN_SECTIONS = ("📚", "💡", "🔥")
     for sec in sections:
         title = sec[0].strip()
+        if any(title.startswith(e) for e in HIDDEN_SECTIONS):
+            continue
         body_lines = [_beautify_line(l) for l in sec[1:]]
         # 子标题（**①…）前插入空行形成独立段落，
         # 否则会被前面的markdown列表吸收成缩进内容
@@ -705,7 +710,11 @@ if st.session_state.eval_result:
         _boundary = extract_boundary(result)
         _target, _opening = extract_key_numbers(result)
         if any([_boundary, _target, _opening]):
-            c1, c2, c3 = st.columns(3)
+            # 行政区土地租金标准范围（从报告文本提取）
+            _range_m = re.search(r"租金标准[^\d]{0,15}(\d+)\s*[-–~至—]\s*(\d+)", result)
+            _range_str = f"{_range_m.group(1)}–{_range_m.group(2)} 元" if _range_m else "—"
+            c0, c1, c2, c3 = st.columns(4)
+            c0.metric("🏛️ 行政区租金标准", _range_str)
             c1.metric("💰 租金边界（上限）", f"{_boundary} 元" if _boundary else "—")
             c2.metric("🎯 目标租金", f"{_target} 元" if _target else "—")
             c3.metric("🤝 谈判起点价", f"{_opening} 元" if _opening else "—")
@@ -725,11 +734,19 @@ if st.session_state.eval_result:
                     except (ValueError, TypeError):
                         return None
 
+                def _audit_display(v):
+                    """内审日期展示：2025年6月及以前为早期建站，成交租金不具参考性"""
+                    s = str(v or "").strip()[:10]
+                    if not s or s in ("nan", "None"):
+                        return "—"
+                    return f"{s} ⚠️早期" if s <= "2025-06-30" else s
+
                 rows_ = []
                 for d_km, brow in benches:
                     rows_.append({
                         "站点": brow["name"],
                         "距离(km)": round(d_km, 2),
+                        "内审日期": _audit_display(brow.get("audit_date")),
                         "商圈类型": str(brow.get("bc_type", "") or "—"),
                         "道路条件": str(brow.get("road_cond", "") or "—"),
                         "成交租金(元)": _num(brow.get("unit_rent")),
@@ -742,6 +759,7 @@ if st.session_state.eval_result:
                     rows_.append({
                         "站点": "★ 本站建议",
                         "距离(km)": None,
+                        "内审日期": "—",
                         "商圈类型": _bc_m.group(1).strip() if _bc_m else "—",
                         "道路条件": _road_m.group(1).strip() if _road_m else "—",
                         "成交租金(元)": int(_target) if _target else None,
@@ -750,6 +768,7 @@ if st.session_state.eval_result:
                 _df_show = pd.DataFrame(rows_)
                 _df_show["距离(km)"] = _df_show["距离(km)"].apply(lambda v: f"{v:.2f}" if isinstance(v, (int, float)) and v is not None else "—")
                 st.dataframe(_df_show, hide_index=True, use_container_width=True)
+                st.caption("⚠️早期 = 2025年上半年及以前过会，早期建站未严格管控租金，成交租金不具参考性，仅边界可参考")
 
         # 周边POI统计（2km，高德实时检索）
         _pois = st.session_state.get("eval_pois") or {}
