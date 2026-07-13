@@ -260,20 +260,15 @@ def find_nearby_industrial(coord: str) -> str:
 
 
 def find_nearby_commercial(coord: str) -> str:
-    """2km内大型商业/文化设施，结果传给 Coze 补充地图盲区。"""
-    keywords = "购物广场|购物中心|文化广场|万家福|大润发|沃尔玛|永辉|嘉荣|华润万家|家乐福|天虹|步步高|万达|吾悦|宝龙"
-    NAME_MUST_CONTAIN = [
-        "购物广场", "购物中心", "文化广场", "商业广场", "商业中心",
-        "万家福", "大润发", "沃尔玛", "永辉", "嘉荣",
-        "华润万家", "家乐福", "天虹", "步步高",
-        "万达广场", "吾悦广场", "宝龙广场",
-    ]
+    """2km内商场/购物中心，结果传给 Coze 补充地图盲区。
+    用高德官方商场分类码（060100）检索，比关键词+名称白名单可靠：
+    旧方案会漏掉永旺梦乐城、金铂天地等不含"广场/中心"字样的大型商场。"""
     try:
         r = requests.get(
             "https://restapi.amap.com/v3/place/around",
             params={
                 "location": coord,
-                "keywords": keywords,
+                "types":    "060100",   # 商场大类（含购物中心/普通商场）
                 "radius":   2000,
                 "sortrule": "distance",
                 "offset":   10,
@@ -284,14 +279,15 @@ def find_nearby_commercial(coord: str) -> str:
             timeout=10,
         ).json()
         pois = r.get("pois") or []
-        # 关键词须出现在名称末尾，且名称主体不含连字符（过滤子地点噪音）
-        pois = [p for p in pois
-                if _kw_at_end(_name_main(str(p.get("name", ""))), NAME_MUST_CONTAIN)
-                and "-" not in _name_main(str(p.get("name", "")))]
         if not pois:
             return ""
-        lines = [f"{p.get('name', '').strip()}（{p.get('distance', '')}m）" for p in pois[:5]]
-        return "【周边大型商业/文化设施（高德自动检索，2km内）】\n" + "\n".join(lines)
+        lines = []
+        for p in pois[:5]:
+            name = str(p.get("name", "")).strip()
+            # type形如"购物服务;商场;购物中心|购物服务;超级市场;超市"，取第一段末级
+            subtype = str(p.get("type", "")).split("|")[0].split(";")[-1]
+            lines.append(f"{name}（{p.get('distance', '')}m，{subtype}）")
+        return "【周边商场/购物中心（高德自动检索，2km内）】\n" + "\n".join(lines)
     except Exception:
         return ""
 
