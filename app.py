@@ -261,35 +261,43 @@ def find_nearby_industrial(coord: str) -> str:
 
 def find_nearby_commercial(coord: str) -> str:
     """2km内商场/购物中心，结果传给 Coze 补充地图盲区。
-    用高德官方商场分类码（060100）检索，比关键词+名称白名单可靠：
-    旧方案会漏掉永旺梦乐城、金铂天地等不含"广场/中心"字样的大型商场。"""
-    try:
-        r = requests.get(
-            "https://restapi.amap.com/v3/place/around",
-            params={
-                "location": coord,
-                "types":    "060100",   # 商场大类（含购物中心/普通商场）
-                "radius":   2000,
-                "sortrule": "distance",
-                "offset":   10,
-                "page":     1,
-                "key":      AMAP_KEY,
-                "output":   "json",
-            },
-            timeout=10,
-        ).json()
-        pois = r.get("pois") or []
-        if not pois:
-            return ""
-        lines = []
-        for p in pois[:5]:
-            name = str(p.get("name", "")).strip()
-            # type形如"购物服务;商场;购物中心|购物服务;超级市场;超市"，取第一段末级
-            subtype = str(p.get("type", "")).split("|")[0].split(";")[-1]
-            lines.append(f"{name}（{p.get('distance', '')}m，{subtype}）")
-        return "【周边商场/购物中心（高德自动检索，2km内）】\n" + "\n".join(lines)
-    except Exception:
+    双查询合并：商场分类码060100 + 商业关键词，均以"POI官方类型含'商场'"过滤，
+    不会混入餐馆/店铺（官方类型≠商户自报类型）。
+    旧的名称白名单方案会漏掉永旺梦乐城等不含"广场/中心"字样的大型商场。"""
+    seen, results = set(), []
+    for extra in [
+        {"types": "060100"},   # 商场大类（购物中心/普通商场）
+        {"keywords": "购物中心|购物广场|商业广场|文化广场|天地|万达广场|吾悦广场|印象城|大悦城|万象城|万象汇|梦乐城|环宇城|天街"},
+    ]:
+        params = {
+            "location": coord, "radius": 2000, "sortrule": "distance",
+            "offset": 20, "page": 1, "key": AMAP_KEY, "output": "json",
+        }
+        params.update(extra)
+        try:
+            r = requests.get("https://restapi.amap.com/v3/place/around",
+                             params=params, timeout=10).json()
+        except Exception:
+            continue
+        for p in (r.get("pois") or []):
+            name  = str(p.get("name", "")).strip()
+            ptype = str(p.get("type", ""))
+            if "商场" not in ptype:   # 高德官方类型过滤，排除餐饮/零售小店
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+            subtype = ptype.split("|")[0].split(";")[-1]
+            try:
+                dist = int(p.get("distance") or 0)
+            except (ValueError, TypeError):
+                dist = 0
+            results.append((dist, f"{name}（{dist}m，{subtype}）"))
+    if not results:
         return ""
+    results.sort()
+    lines = [t for _, t in results[:5]]
+    return "【周边商场/购物中心（高德自动检索，2km内）】\n" + "\n".join(lines)
 
 
 def find_benchmarks(coord: str, city: str, station_name: str, df: pd.DataFrame):
