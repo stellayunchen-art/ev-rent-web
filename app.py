@@ -821,7 +821,7 @@ if submitted:
         # Step 2.6：最近对标站点普遍偏远 + 周边工业多商业少 → 全市补充同类型（工业区/城中村）站点
         # 让AI有真实同类案例可归纳，而非在无相关数据时硬套公式
         supplement = []
-        if benches and min(d for d, _ in benches) > 3.0 and nearby_ind and not nearby:
+        if benches and min(d for d, _ in benches) > 3.0:
             st.write("🏗️ 附近对标站点较远，正在全市范围补充同类型（工业区/城中村）站点…")
             existing_names = {row["name"] for _, row in benches}
             supplement = find_industrial_supplement(coord, city, f_name, existing_names, df, need=2)
