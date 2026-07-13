@@ -355,23 +355,34 @@ def format_benchmark_info(benches) -> str:
 
 
 def static_map_urls(coord: str):
-    """生成 zoom13/14/15 三张高德静态地图URL（与Coze工作流代码节点一致）。"""
+    """生成 3km/2km/1km 三张高德静态地图URL（与Coze工作流代码节点一致）。
+    zoom+图片尺寸组合精确控制图幅（广东纬度约23°）：
+    zoom=15@682px≈3km见方、zoom=15@455px≈2km见方、zoom=16@455px≈1km见方。"""
     coord = str(coord).replace(" ", "").strip()  # 空格会导致高德返回JSON错误
     base = "https://restapi.amap.com/v3/staticmap"
     marker = f"mid,,A:{coord}"
+    specs = [
+        ("3km", 15, "682*682"),
+        ("2km", 15, "455*455"),
+        ("1km", 16, "455*455"),
+    ]
     return [
-        (z, f"{base}?location={coord}&zoom={z}&size=500*400&markers={marker}&key={AMAP_KEY}")
-        for z in (13, 14, 15)
+        (label, f"{base}?location={coord}&zoom={z}&size={s}&markers={marker}&key={AMAP_KEY}")
+        for label, z, s in specs
     ]
 
 
 def render_static_maps(coord: str):
     """三列并排展示站点周边静态地图。"""
     cols = st.columns(3)
-    captions = {13: "zoom=13 · 城市格局", 14: "zoom=14 · 周边业态", 15: "zoom=15 · 紧邻环境"}
-    for col, (z, url) in zip(cols, static_map_urls(coord)):
+    captions = {
+        "3km": "图幅3km · 片区业态（可见≤3km）",
+        "2km": "图幅2km · 周边环境（可见≤2km）",
+        "1km": "图幅1km · 紧邻环境（可见≤1km）",
+    }
+    for col, (label, url) in zip(cols, static_map_urls(coord)):
         with col:
-            st.image(url, caption=captions[z], use_container_width=True)
+            st.image(url, caption=captions[label], use_container_width=True)
 
 
 def format_report(result: str) -> str:
