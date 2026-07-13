@@ -824,7 +824,9 @@ if submitted:
         if benches and min(d for d, _ in benches) > 3.0:
             st.write("🏗️ 附近对标站点较远，正在全市范围补充同类型（工业区/城中村）站点…")
             existing_names = {row["name"] for _, row in benches}
-            supplement = find_industrial_supplement(coord, city, f_name, existing_names, df, need=2)
+            # 需要足够数量才能覆盖不同价格片区（如近处高价corridor + 远一点的低价工业带），
+            # 让AI有完整图景可比较归纳，而非只看到与最近3个同质的高价案例
+            supplement = find_industrial_supplement(coord, city, f_name, existing_names, df, need=6)
             for d_km, row in supplement:
                 st.write(f"  · {row['name']}（同类型补充） — {round(d_km, 2)} km")
 
