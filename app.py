@@ -14,12 +14,14 @@ from pathlib import Path
 st.set_page_config(
     page_title="换电站租金评估",
     page_icon="⚡",
-    layout="centered",
+    layout="wide",
 )
 
 # ── 全局样式 ──────────────────────────────────
 st.markdown("""
 <style>
+/* 宽屏但限制最大宽度，避免超宽显示器上内容被拉得过散 */
+.block-container { max-width: 1400px; padding-top: 2rem; }
 /* 主标题横幅（浅色卡片+图标徽章+流程胶囊） */
 .hero-banner {
     background: linear-gradient(180deg, #ffffff 0%, #f4f8fe 100%);
@@ -368,10 +370,45 @@ def find_industrial_supplement(coord: str, city: str, station_name: str,
     return candidates[:need]
 
 
+def _bound(row):
+    try:
+        return float(str(row.get("bound_rent", "")).replace(",", ""))
+    except (ValueError, TypeError):
+        return None
+
+
+def detect_dominant_cluster(benches, supplement):
+    """比较最近对标站点与全市同类型补充案例的边界水平：
+    若补充案例中有≥2个边界明显低于最近对标站点（<85%），判定为更能代表当前真实定价的主导集群，
+    返回一句可直接写入benchmark_info的系统提示，明确建议AI改用该集群中最合适的案例作为锚点。
+    这是为了避免AI单纯因为"距离最近"而默认选用价格明显偏高的孤立案例。"""
+    near_bounds = [b for _, r in benches if (b := _bound(r)) is not None]
+    if not near_bounds or not supplement:
+        return None
+    near_median = sorted(near_bounds)[len(near_bounds) // 2]
+
+    low_supp = [(d, r) for d, r in supplement if (b := _bound(r)) is not None and b < near_median * 0.85]
+    if len(low_supp) < 2:
+        return None
+
+    low_supp.sort(key=lambda x: x[0])  # 低价集群里选距离最近的一个作为推荐锚点
+    best_d, best_row = low_supp[0]
+    best_bound = _bound(best_row)
+    low_values = sorted(_bound(r) for _, r in low_supp)
+
+    return (
+        f"⚠️系统提示：距离最近的对标站点边界集中在约{round(near_median)}元，"
+        f"但全市同类型补充案例中有{len(low_supp)}个边界明显更低（约{low_values[0]:.0f}-{low_values[-1]:.0f}元），"
+        f"距离虽较远但业态更贴近本站点。建议以【{best_row['name']}】（{best_d:.2f}km，边界{best_bound:.0f}元）"
+        f"作为边界判定的主要参考锚点，而非以上方最近对标站点为锚点——"
+        f"多个一致的同类型案例比单个距离更近但价格明显偏高的案例更能代表当前真实定价水平。"
+    )
+
+
 def format_benchmark_info(benches, supplement=None) -> str:
     """把 Haversine 匹配到的对标站点格式化成文字，传给 Coze 工作流。
     supplement：当最近对标站点普遍偏远时，全市范围补充的同类型（工业区/城中村）站点，
-    距离权重低于最近对标站点，但作为真实同类案例供AI归纳参考。"""
+    是与最近对标站点同等有效的真实数据，供AI综合归纳、判断合理锚点。"""
     if not benches:
         return "（同城市内未找到近距离对标站点，请依赖知识库语义检索）"
 
@@ -394,9 +431,13 @@ def format_benchmark_info(benches, supplement=None) -> str:
     lines = [_fmt(i, d_km, row) for i, (d_km, row) in enumerate(benches, 1)]
     if supplement:
         lines.append("")
-        lines.append("【全市同类型补充案例（工业区/城中村主导，距离较远但业态相似，仅供归纳参考，不作为边界锚点）】")
+        lines.append("【全市同类型补充案例（工业区/城中村主导，距离较远但业态相似，与最近对标站点同等有效，供综合判断锚点）】")
         for j, (d_km, row) in enumerate(supplement, 1):
             lines.append(_fmt(j, d_km, row, tag="(同类型)"))
+        note = detect_dominant_cluster(benches, supplement)
+        if note:
+            lines.append("")
+            lines.append(note)
     return "\n".join(lines)
 
 
@@ -1065,6 +1106,25 @@ load().catch(e => {{
                         return "—"
                     return f"{s} ⚠️早期" if s <= "2025-06-30" else s
 
+                def _parse_similarity_notes(text: str) -> dict:
+                    """从📚参考案例文本中解析每个站点的"相似/差异"说明。"""
+                    notes = {}
+                    lines = get_section_lines(text, "📚")
+                    cur_name = None
+                    for l in lines:
+                        s = l.strip()
+                        if not s:
+                            continue
+                        m = re.match(r"^\d*\.?\s*([^（(]+)[（(]", s)
+                        if m and "相似" not in s and "差异" not in s:
+                            cur_name = m.group(1).strip()
+                        elif s.startswith("相似") and cur_name:
+                            notes[cur_name] = s.split("：", 1)[-1].split(":", 1)[-1].strip()
+                            cur_name = None
+                    return notes
+
+                _sim_notes = _parse_similarity_notes(result)
+
                 rows_ = []
                 for d_km, brow in benches:
                     rows_.append({
@@ -1076,6 +1136,7 @@ load().catch(e => {{
                         "道路条件": str(brow.get("road_cond", "") or "—"),
                         "成交租金(元)": _num(brow.get("unit_rent")),
                         "租金边界(元)": _num(brow.get("bound_rent")),
+                        "相似/差异": _sim_notes.get(brow["name"], "—"),
                     })
                 # 全市同类型补充案例（工业区/城中村主导，距离较远，仅供归纳参考）
                 for d_km, brow in (st.session_state.get("eval_supplement") or []):
@@ -1088,6 +1149,7 @@ load().catch(e => {{
                         "道路条件": str(brow.get("road_cond", "") or "—"),
                         "成交租金(元)": _num(brow.get("unit_rent")),
                         "租金边界(元)": _num(brow.get("bound_rent")),
+                        "相似/差异": "（全市同类型补充，AI未逐一分析）",
                     })
                 # 末行加入本站建议（商圈/道路取AI评估结果），方便与对标直接比较
                 if _target or _boundary:
@@ -1102,10 +1164,14 @@ load().catch(e => {{
                         "道路条件": _road_m.group(1).strip() if _road_m else "—",
                         "成交租金(元)": int(_target) if _target else None,
                         "租金边界(元)": int(_boundary) if _boundary else None,
+                        "相似/差异": "",
                     })
                 _df_show = pd.DataFrame(rows_)
                 _df_show["距离(km)"] = _df_show["距离(km)"].apply(lambda v: f"{v:.2f}" if isinstance(v, (int, float)) and v is not None else "—")
-                st.dataframe(_df_show, hide_index=True, width="stretch")
+                st.dataframe(
+                    _df_show, hide_index=True, width="stretch",
+                    column_config={"相似/差异": st.column_config.TextColumn(width="large")},
+                )
                 st.caption("⚠️早期 = 2025年上半年及以前过会，早期建站未严格管控租金，成交租金不具参考性，仅边界可参考")
 
         st.subheader("📋 评估报告详情")
