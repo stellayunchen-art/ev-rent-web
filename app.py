@@ -105,7 +105,7 @@ if USERS and not st.session_state.get("auth_user"):
         with st.form("login_form"):
             _phone = st.text_input("📱 手机号", placeholder="请输入手机号")
             _pwd   = st.text_input("🔑 密码", type="password", placeholder="请输入密码")
-            _login = st.form_submit_button("登 录", use_container_width=True, type="primary")
+            _login = st.form_submit_button("登 录", width="stretch", type="primary")
         if _login:
             import hmac as _hmac
             _real = USERS.get(_phone.strip())
@@ -121,8 +121,8 @@ if USERS:
     # 登录信息显示在右上角小气泡，不占版面
     _, _user_col = st.columns([3.2, 1])
     with _user_col:
-        with st.popover(f"👤 {st.session_state.auth_user}", use_container_width=True):
-            if st.button("退出登录", use_container_width=True):
+        with st.popover(f"👤 {st.session_state.auth_user}", width="stretch"):
+            if st.button("退出登录", width="stretch"):
                 st.session_state.auth_user = None
                 st.rerun()
 
@@ -382,7 +382,7 @@ def render_static_maps(coord: str):
     }
     for col, (label, url) in zip(cols, static_map_urls(coord)):
         with col:
-            st.image(url, caption=captions[label], use_container_width=True)
+            st.image(url, caption=captions[label], width="stretch")
 
 
 def format_report(result: str) -> str:
@@ -679,7 +679,7 @@ with st.form("eval_form"):
         placeholder="例：113.935068,22.677748",
         help="从钉图易点击站点位置获取坐标，格式：经度,纬度（中英文逗号均可）。填入后将覆盖高德自动定位。",
     )
-    submitted = st.form_submit_button("🚀 开始评估", use_container_width=True, type="primary")
+    submitted = st.form_submit_button("🚀 开始评估", width="stretch", type="primary")
 
 # ── Session State 初始化 ──────────────────────
 if "eval_result" not in st.session_state:
@@ -1031,7 +1031,7 @@ load().catch(e => {{
                     })
                 _df_show = pd.DataFrame(rows_)
                 _df_show["距离(km)"] = _df_show["距离(km)"].apply(lambda v: f"{v:.2f}" if isinstance(v, (int, float)) and v is not None else "—")
-                st.dataframe(_df_show, hide_index=True, use_container_width=True)
+                st.dataframe(_df_show, hide_index=True, width="stretch")
                 st.caption("⚠️早期 = 2025年上半年及以前过会，早期建站未严格管控租金，成交租金不具参考性，仅边界可参考")
 
         st.subheader("📋 评估报告详情")
@@ -1092,7 +1092,7 @@ load().catch(e => {{
             data=full_text,
             file_name=f"租金评估_{f_name}.txt",
             mime="text/plain",
-            use_container_width=True,
+            width="stretch",
         )
 
     # ── 商务同事 视图 ─────────────────────────
