@@ -331,13 +331,52 @@ def find_benchmarks(coord: str, city: str, station_name: str, df: pd.DataFrame):
     return candidates[:3]
 
 
-def format_benchmark_info(benches) -> str:
-    """把 Haversine 匹配到的对标站点格式化成文字，传给 Coze 工作流。"""
+INDUSTRIAL_KEYWORDS = ["工业区", "工业园", "产业园", "城中村", "物流", "厂房", "五金", "制造", "仓储"]
+
+
+def find_industrial_supplement(coord: str, city: str, station_name: str,
+                                existing_names: set, df: pd.DataFrame, need: int = 2):
+    """当最近的对标站点普遍偏远（无法就近参考）时，
+    在全市范围按 area_type 关键词补充同类型（工业区/城中村主导）站点，
+    不受距离限制——让 AI 有真实同类案例可归纳，而非套用固定公式。"""
+    if df.empty:
+        return []
+    candidates = []
+    for _, row in df.iterrows():
+        name = row["name"]
+        if name == station_name or name in existing_names:
+            continue
+        if row.get("city") != city:
+            continue
+        if is_highway(name):
+            continue
+        if "," not in str(row.get("coord", "")):
+            continue
+        try:
+            if float(str(row.get("bound_rent", "")).replace(",", "") or 0) <= 0:
+                continue
+        except (ValueError, TypeError):
+            continue
+        area_text = str(row.get("area_type", "")) + str(row.get("bc_type", ""))
+        if not any(kw in area_text for kw in INDUSTRIAL_KEYWORDS):
+            continue
+        d = haversine(coord, row["coord"])
+        if d < 0.1:
+            continue
+        candidates.append((d, row))
+    candidates.sort(key=lambda x: x[0])
+    return candidates[:need]
+
+
+def format_benchmark_info(benches, supplement=None) -> str:
+    """把 Haversine 匹配到的对标站点格式化成文字，传给 Coze 工作流。
+    supplement：当最近对标站点普遍偏远时，全市范围补充的同类型（工业区/城中村）站点，
+    距离权重低于最近对标站点，但作为真实同类案例供AI归纳参考。"""
     if not benches:
         return "（同城市内未找到近距离对标站点，请依赖知识库语义检索）"
-    lines = []
-    for i, (d_km, row) in enumerate(benches, 1):
-        parts = [f"对标{i}：{row['name']}（{round(d_km, 2)}km）"]
+
+    def _fmt(i, d_km, row, tag=""):
+        parts = [f"对标{i}{tag}：{row['name']}（{round(d_km, 2)}km）"]
         for key, label in [
             ("unit_rent",  "单车位租金"),
             ("bound_rent", "租金边界"),
@@ -350,7 +389,14 @@ def format_benchmark_info(benches) -> str:
             v = str(row.get(key, "")).strip()
             if v and v not in ("nan", "", "0", "0.0"):
                 parts.append(f"{label}：{v}")
-        lines.append(" | ".join(parts))
+        return " | ".join(parts)
+
+    lines = [_fmt(i, d_km, row) for i, (d_km, row) in enumerate(benches, 1)]
+    if supplement:
+        lines.append("")
+        lines.append("【全市同类型补充案例（工业区/城中村主导，距离较远但业态相似，仅供归纳参考，不作为边界锚点）】")
+        for j, (d_km, row) in enumerate(supplement, 1):
+            lines.append(_fmt(j, d_km, row, tag="(同类型)"))
     return "\n".join(lines)
 
 
@@ -686,6 +732,7 @@ if "eval_result" not in st.session_state:
     st.session_state.eval_result = None   # 评估报告文本
     st.session_state.eval_meta   = {}     # 站点名/地址/坐标/城市/行政区
     st.session_state.eval_benches = []    # 对标站点列表
+    st.session_state.eval_supplement = [] # 全市同类型补充案例
 
 # ── 评估流程 ──────────────────────────────────
 if submitted:
@@ -771,9 +818,19 @@ if submitted:
         else:
             st.write("  · 1.5km 内未检索到大型商业/文化设施")
 
+        # Step 2.6：最近对标站点普遍偏远 + 周边工业多商业少 → 全市补充同类型（工业区/城中村）站点
+        # 让AI有真实同类案例可归纳，而非在无相关数据时硬套公式
+        supplement = []
+        if benches and min(d for d, _ in benches) > 3.0 and nearby_ind and not nearby:
+            st.write("🏗️ 附近对标站点较远，正在全市范围补充同类型（工业区/城中村）站点…")
+            existing_names = {row["name"] for _, row in benches}
+            supplement = find_industrial_supplement(coord, city, f_name, existing_names, df, need=2)
+            for d_km, row in supplement:
+                st.write(f"  · {row['name']}（同类型补充） — {round(d_km, 2)} km")
+
         # Step 3：调用 Coze 工作流（流式优先，失败回退非流式）
         # 复用上面已查询的POI结果，避免重复请求高德API
-        benchmark_info = format_benchmark_info(benches or [])
+        benchmark_info = format_benchmark_info(benches or [], supplement)
         for extra in (nearby_tr, nearby_ind, nearby):
             if extra:
                 benchmark_info = benchmark_info + "\n\n" + extra
@@ -791,6 +848,7 @@ if submitted:
     st.session_state.eval_result  = result
     st.session_state.eval_meta    = {"name": f_name, "addr": f_addr, "coord": coord, "city": city, "district": district}
     st.session_state.eval_benches = benches
+    st.session_state.eval_supplement = supplement
     st.session_state.eval_pois    = {"🚉 交通枢纽": nearby_tr, "🏭 工业园/产业园": nearby_ind, "🏬 大型商业设施": nearby}
 
 # ── 双视图展示（从 session_state 读取，刷新不丢失）────
@@ -1016,6 +1074,17 @@ load().catch(e => {{
                         "成交租金(元)": _num(brow.get("unit_rent")),
                         "租金边界(元)": _num(brow.get("bound_rent")),
                     })
+                # 全市同类型补充案例（工业区/城中村主导，距离较远，仅供归纳参考）
+                for d_km, brow in (st.session_state.get("eval_supplement") or []):
+                    rows_.append({
+                        "站点": f"{brow['name']}（同类型）",
+                        "距离(km)": round(d_km, 2),
+                        "内审日期": _audit_display(brow.get("audit_date")),
+                        "商圈类型": str(brow.get("bc_type", "") or "—"),
+                        "道路条件": str(brow.get("road_cond", "") or "—"),
+                        "成交租金(元)": _num(brow.get("unit_rent")),
+                        "租金边界(元)": _num(brow.get("bound_rent")),
+                    })
                 # 末行加入本站建议（商圈/道路取AI评估结果），方便与对标直接比较
                 if _target or _boundary:
                     _bc_m   = re.search(r"商圈类型[：:]\s*([^\n，,。；;（(]+)", result)
@@ -1076,6 +1145,17 @@ load().catch(e => {{
         if benches:
             _full_lines += ["", "【对标案例】"]
             for _i, (_d, _b) in enumerate(benches, 1):
+                _ad = str(_b.get("audit_date", "") or "").strip()[:10]
+                _early = "（⚠️早期，成交租金不参考）" if _ad and _ad <= "2025-06-30" else ""
+                _full_lines.append(
+                    f"{_i}. {_b['name']}｜距离{_d:.2f}km｜内审{_ad or '—'}{_early}｜"
+                    f"{_b.get('bc_type', '') or '—'}｜{_b.get('road_cond', '') or '—'}｜"
+                    f"成交{_b.get('unit_rent', '') or '—'}元｜边界{_b.get('bound_rent', '') or '—'}元"
+                )
+        _supp = st.session_state.get("eval_supplement") or []
+        if _supp:
+            _full_lines += ["", "【全市同类型补充案例（工业区/城中村主导，仅供归纳参考）】"]
+            for _i, (_d, _b) in enumerate(_supp, 1):
                 _ad = str(_b.get("audit_date", "") or "").strip()[:10]
                 _early = "（⚠️早期，成交租金不参考）" if _ad and _ad <= "2025-06-30" else ""
                 _full_lines.append(
