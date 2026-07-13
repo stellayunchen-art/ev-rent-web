@@ -34,11 +34,11 @@ st.markdown("""
 }
 .hero-icon {
     width: 58px; height: 58px; flex-shrink: 0;
-    background: linear-gradient(135deg, #ff5f6d 0%, #ffc371 100%);
+    background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
     border-radius: 15px;
     display: flex; align-items: center; justify-content: center;
     font-size: 30px;
-    box-shadow: 0 4px 12px rgba(255,95,109,0.35);
+    box-shadow: 0 4px 12px rgba(30,60,114,0.35);
 }
 .hero-banner h1 {
     margin: 0;
@@ -118,11 +118,13 @@ if USERS and not st.session_state.get("auth_user"):
     st.stop()
 
 if USERS:
-    with st.sidebar:
-        st.caption(f"👤 已登录：{st.session_state.auth_user}")
-        if st.button("退出登录", use_container_width=True):
-            st.session_state.auth_user = None
-            st.rerun()
+    # 登录信息显示在右上角小气泡，不占版面
+    _, _user_col = st.columns([3.2, 1])
+    with _user_col:
+        with st.popover(f"👤 {st.session_state.auth_user}", use_container_width=True):
+            if st.button("退出登录", use_container_width=True):
+                st.session_state.auth_user = None
+                st.rerun()
 
 # ═══════════════════════════════════════════════
 #  读取 Secrets
@@ -846,15 +848,34 @@ if st.session_state.eval_result:
         if coord:
             with st.container(border=True):
                 st.markdown("##### 🗺️ 站点周边与定位")
-                # 关键特征高亮条（商圈+道路结论一眼可见）
-                _bc_v = re.search(r"商圈类型[：:]\s*([^\n，,。；;（(]+)", result)
-                _rd_v = re.search(r"道路条件[：:]\s*([^\n，,。；;（(]+)", result)
-                if _bc_v or _rd_v:
-                    _feat = " ｜ ".join([x.group(1).strip() for x in (_bc_v, _rd_v) if x])
+                # 关键特征高亮条：区域性质描述（商圈类型）· 道路描述+通达结论（仿领导版）
+                _bc_val = _rd_val = _bc_rs = _rd_rs = ""
+                _last_lbl = None
+                for _l in get_section_lines(result, "📍"):
+                    _s = _l.strip()
+                    _m = re.match(r"^商圈类型[：:]\s*(.+)$", _s)
+                    if _m:
+                        _bc_val, _last_lbl = _m.group(1).strip(), "bc"
+                        continue
+                    _m = re.match(r"^道路条件[：:]\s*(.+)$", _s)
+                    if _m:
+                        _rd_val, _last_lbl = _m.group(1).strip(), "rd"
+                        continue
+                    _m = re.match(r"^依据[：:]\s*(.+)$", _s)
+                    if _m and _last_lbl == "bc":
+                        _bc_rs = _m.group(1).strip()
+                    elif _m and _last_lbl == "rd":
+                        _rd_rs = _m.group(1).strip()
+                if _bc_val or _rd_val:
+                    _bc_first = re.split(r"[，。；,;]", _bc_rs)[0] if _bc_rs else ""
+                    _rd_first = re.split(r"[，。；,;]", _rd_rs)[0] if _rd_rs else ""
+                    _left  = f"{_bc_first}（{_bc_val}）" if _bc_first else _bc_val
+                    _right = f"{_rd_first}，{_rd_val}" if _rd_first else _rd_val
+                    _feat = " · ".join(x for x in (_left, _right) if x)
                     st.markdown(
                         f"<div style='background:#e8f1fd;border:1px solid #c9defb;border-radius:10px;"
-                        f"padding:9px 16px;color:#1857b8;font-size:0.98rem;font-weight:600;"
-                        f"margin-bottom:12px'>🟢 {city} · {district} ｜ {_feat}</div>",
+                        f"padding:9px 16px;color:#1857b8;font-size:0.95rem;font-weight:600;"
+                        f"margin-bottom:12px'>🟢 {_feat}</div>",
                         unsafe_allow_html=True,
                     )
                 render_static_maps(coord)
