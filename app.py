@@ -1068,6 +1068,7 @@ load().catch(e => {{
                 rows_ = []
                 for d_km, brow in benches:
                     rows_.append({
+                        "来源": "🎯最近对标",
                         "站点": brow["name"],
                         "距离(km)": round(d_km, 2),
                         "内审日期": _audit_display(brow.get("audit_date")),
@@ -1079,7 +1080,8 @@ load().catch(e => {{
                 # 全市同类型补充案例（工业区/城中村主导，距离较远，仅供归纳参考）
                 for d_km, brow in (st.session_state.get("eval_supplement") or []):
                     rows_.append({
-                        "站点": f"{brow['name']}（同类型）",
+                        "来源": "🏭全市补充",
+                        "站点": brow["name"],
                         "距离(km)": round(d_km, 2),
                         "内审日期": _audit_display(brow.get("audit_date")),
                         "商圈类型": str(brow.get("bc_type", "") or "—"),
@@ -1092,6 +1094,7 @@ load().catch(e => {{
                     _bc_m   = re.search(r"商圈类型[：:]\s*([^\n，,。；;（(]+)", result)
                     _road_m = re.search(r"道路条件[：:]\s*([^\n，,。；;（(]+)", result)
                     rows_.append({
+                        "来源": "",
                         "站点": "★ 本站建议",
                         "距离(km)": None,
                         "内审日期": "—",
