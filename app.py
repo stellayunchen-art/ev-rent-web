@@ -304,8 +304,7 @@ def find_benchmarks(coord: str, city: str, station_name: str, df: pd.DataFrame):
     for _, row in df.iterrows():
         if row["name"] == station_name:
             continue
-        if row["city"] != city:
-            continue
+        # 不限制同城市/同行政区：交界处站点按纯直线距离匹配（如白云-南海交界）
         if "," not in str(row.get("coord", "")):
             continue
         row_hw = is_highway(str(row["name"]))
