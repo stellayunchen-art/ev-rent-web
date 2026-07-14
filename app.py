@@ -140,6 +140,7 @@ HIGHWAY_KEYWORDS = ["高速", "服务区", "收费站"]
 BENCH_CSV = Path(__file__).parent / "benchmarks.csv"
 RENT_STANDARD_CSV = Path(__file__).parent / "rent_standard.csv"
 RENT_MODEL_PATH   = Path(__file__).parent / "rent_model.joblib"
+FEATURES_CSV      = Path(__file__).parent / "station_features.csv"
 
 # ═══════════════════════════════════════════════
 #  工具函数
@@ -198,6 +199,67 @@ def load_rent_model():
         return joblib.load(RENT_MODEL_PATH)
     except Exception:
         return None
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def district_sample_count(city: str, district: str) -> int:
+    """该城市-行政区在训练集（station_features.csv）中的样本数，用于置信度评估。"""
+    if not FEATURES_CSV.exists():
+        return 0
+    df = pd.read_csv(FEATURES_CSV, encoding="utf-8-sig")
+    city_clean = str(city).replace("市", "").strip()
+    return int(((df["city"].astype(str).str.strip() == city_clean) &
+                (df["district"].astype(str).str.strip() == str(district).strip())).sum())
+
+
+def assess_confidence(city, district, transit_count, industrial_count, mall_count, benches):
+    """确定性置信度评估（规则算分，非AI判断）。
+    返回 (等级'高'/'中'/'低', 原因列表, 人工审核建议列表)。"""
+    flags_low, flags_mid = [], []
+
+    # 1. 训练样本覆盖：该行政区历史样本太少 → 模型对此区外推，可信度降
+    n_samples = district_sample_count(city, district)
+    if n_samples < 3:
+        flags_low.append(f"该行政区训练样本仅 {n_samples} 个（<3），模型属外推预测")
+    elif n_samples < 10:
+        flags_mid.append(f"该行政区训练样本 {n_samples} 个（<10），覆盖偏薄")
+
+    # 2. POI稀疏度：周边设施极少 → 特征信号弱（借鉴领导工具的判断）
+    poi_total = transit_count + industrial_count + mall_count
+    if poi_total < 2:
+        flags_low.append(f"POI 极度稀疏（交通+工业园+商场共 {poi_total} 个 < 2）")
+    elif poi_total < 5:
+        flags_mid.append(f"POI 较稀疏（交通+工业园+商场共 {poi_total} 个 < 5）")
+
+    # 3. 对标距离：最近对标站点太远 → 无近距离市场参照
+    if benches:
+        nearest = min(d for d, _ in benches)
+        if nearest > 8:
+            flags_low.append(f"最近对标站点 {nearest:.1f}km（>8km），无近距离市场参照")
+        elif nearest > 5:
+            flags_mid.append(f"最近对标站点 {nearest:.1f}km（>5km），参照距离偏远")
+    else:
+        flags_low.append("未找到任何对标站点")
+
+    if flags_low:
+        level = "低"
+    elif len(flags_mid) >= 2:
+        level = "中"
+    elif flags_mid:
+        level = "中"
+    else:
+        level = "高"
+
+    advice = []
+    if level == "低":
+        advice = [
+            "联系周边 2-3 个已签约场地的商务同事，了解实际成交参考",
+            "重点确认场地类型（工业园/城中村/专用站）是否属于特殊品类",
+            "参考同城市同类站点均值作为保底谈判目标",
+        ]
+    elif level == "中":
+        advice = ["建议结合报告下方对标案例表格人工复核一遍数字再对外报价"]
+    return level, flags_low + flags_mid, advice
 
 
 def predict_target_rent(city: str, district: str, transit_count: int, industrial_count: int, mall_count: int):
@@ -821,23 +883,27 @@ if not COZE_TOKEN:
         icon="⚠️",
     )
 
-# ── 输入表单 ──────────────────────────────────
-with st.form("eval_form"):
-    f_name = st.text_input(
-        "站点名称 *",
-        placeholder="例：广州天河正佳换电站",
-    )
-    f_addr = st.text_input(
-        "完整地址 *",
-        placeholder="例：广东省广州市天河区天河路385号正佳广场旁",
-        help="请包含省市区信息，系统将自动解析城市和行政区，无需单独填写",
-    )
-    f_coord = st.text_input(
-        "坐标（选填，高德定位不准时手动填入）",
-        placeholder="例：113.935068,22.677748",
-        help="从钉图易点击站点位置获取坐标，格式：经度,纬度（中英文逗号均可）。填入后将覆盖高德自动定位。",
-    )
-    submitted = st.form_submit_button("🚀 开始评估", width="stretch", type="primary")
+# ── 输入表单（侧边栏：左侧输入、右侧展示，减少上下滚动）──
+with st.sidebar:
+    st.markdown("### ⚡ 站点信息输入")
+    with st.form("eval_form"):
+        f_name = st.text_input(
+            "站点名称 *",
+            placeholder="例：广州天河正佳换电站",
+        )
+        f_addr = st.text_area(
+            "完整地址 *",
+            placeholder="例：广东省广州市天河区天河路385号正佳广场旁",
+            help="请包含省市区信息，系统将自动解析城市和行政区，无需单独填写",
+            height=80,
+        )
+        f_coord = st.text_input(
+            "坐标（选填）",
+            placeholder="例：113.935068,22.677748",
+            help="高德定位不准时手动填入。从钉图易点击站点位置获取坐标，格式：经度,纬度（中英文逗号均可）。填入后将覆盖高德自动定位。",
+        )
+        submitted = st.form_submit_button("🚀 开始评估", width="stretch", type="primary")
+    st.caption(f"📊 统计模型：598个历史场地 · MAPE 9.99%")
 
 # ── Session State 初始化 ──────────────────────
 if "eval_result" not in st.session_state:
@@ -955,6 +1021,12 @@ if submitted:
         else:
             st.write("  ⚠️ 未找到该行政区的租金标准或模型不可用，将退回由AI自行判断数字")
 
+        # Step 2.8：置信度评估（确定性规则：训练样本覆盖 + POI密度 + 对标距离）
+        conf_level, conf_reasons, conf_advice = assess_confidence(
+            city, district, transit_count, industrial_count, mall_count, benches
+        )
+        st.write(f"🎚️ 评估置信度：{conf_level}" + (f"（{'；'.join(conf_reasons)}）" if conf_reasons else ""))
+
         # Step 3：调用 Coze 工作流（流式优先，失败回退非流式）
         # 复用上面已查询的POI结果，避免重复请求高德API
         benchmark_info = format_benchmark_info(benches or [], supplement)
@@ -989,6 +1061,7 @@ if submitted:
     st.session_state.eval_supplement = supplement
     st.session_state.eval_pois    = {"🚉 交通枢纽": nearby_tr, "🏭 工业园/产业园": nearby_ind, "🏬 大型商业设施": nearby}
     st.session_state.eval_model   = {"target": model_target, "boundary": model_boundary, "opening": model_opening}
+    st.session_state.eval_confidence = {"level": conf_level, "reasons": conf_reasons, "advice": conf_advice}
 
 # ── 双视图展示（从 session_state 读取，刷新不丢失）────
 if st.session_state.eval_result:
@@ -1050,6 +1123,31 @@ if st.session_state.eval_result:
 """,
                 unsafe_allow_html=True,
             )
+            # 置信度徽章 + 低置信度警示（确定性规则评估，借鉴领导工具设计）
+            _conf = st.session_state.get("eval_confidence") or {}
+            _lv = _conf.get("level")
+            if _lv:
+                _badge_color = {"高": "#12833b;background:#d9f2e3", "中": "#946200;background:#fdf0d5", "低": "#c92a2a;background:#ffe3e3"}[_lv]
+                st.markdown(
+                    f"<div style='text-align:center;margin:4px 0 8px'><span style='color:{_badge_color};"
+                    f"padding:4px 16px;border-radius:999px;font-size:0.88rem;font-weight:700'>"
+                    f"{'✅' if _lv=='高' else '⚠️'} {_lv}置信度</span></div>",
+                    unsafe_allow_html=True,
+                )
+                if _lv == "低":
+                    _reason_html = "".join(f"<div>• {r}</div>" for r in _conf.get("reasons", []))
+                    _advice_html = "".join(f"<div>• {a}</div>" for a in _conf.get("advice", []))
+                    st.markdown(
+                        f"<div style='background:#fff5f5;border-left:4px solid #fa5252;border-radius:8px;"
+                        f"padding:14px 18px;margin-bottom:10px;font-size:0.9rem;color:#495057;line-height:1.9'>"
+                        f"<div style='color:#c92a2a;font-weight:700;margin-bottom:6px'>⚠️ 低置信度 — 建议人工审核</div>"
+                        f"{_reason_html}"
+                        f"<div style='font-weight:700;margin-top:8px'>人工审核建议：</div>{_advice_html}</div>",
+                        unsafe_allow_html=True,
+                    )
+                elif _lv == "中" and _conf.get("reasons"):
+                    st.caption("⚠️ " + "；".join(_conf["reasons"]) + "。" + "；".join(_conf.get("advice", [])))
+
             if _model_nums.get("target"):
                 st.caption("📈 以上边界/目标/起点价由统计模型计算（598个历史场地训练，持出测试集MAPE 9.99%），下方为AI针对此数字的定性说明")
             else:
