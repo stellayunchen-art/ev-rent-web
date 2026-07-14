@@ -1292,7 +1292,7 @@ if st.session_state.eval_result:
                             continue
                         _m = re.match(r"^地段价值[：:]\s*(.+)$", _s)
                         if _m:
-                            _blocks.append({"label": "地段价值", "value": _m.group(2), "reason": "", "plain": True})
+                            _blocks.append({"label": "地段价值", "value": _m.group(1), "reason": "", "plain": True})
                             continue
 
                     for _b in _blocks:
