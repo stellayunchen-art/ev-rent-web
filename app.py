@@ -5,6 +5,7 @@ import re
 import streamlit as st
 import requests
 import pandas as pd
+import numpy as np
 from math import radians, sin, cos, sqrt, atan2
 from pathlib import Path
 
@@ -137,6 +138,8 @@ COZE_WORKFLOW_ID = st.secrets.get("COZE_WORKFLOW_ID", "7642236438868312079")
 
 HIGHWAY_KEYWORDS = ["高速", "服务区", "收费站"]
 BENCH_CSV = Path(__file__).parent / "benchmarks.csv"
+RENT_STANDARD_CSV = Path(__file__).parent / "rent_standard.csv"
+RENT_MODEL_PATH   = Path(__file__).parent / "rent_model.joblib"
 
 # ═══════════════════════════════════════════════
 #  工具函数
@@ -163,6 +166,69 @@ def load_benchmarks() -> pd.DataFrame:
     if not BENCH_CSV.exists():
         return pd.DataFrame()
     return pd.read_csv(BENCH_CSV, dtype=str).fillna("")
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def load_rent_standard() -> dict:
+    """加载行政区租金标准表，返回 {(city, district): (low, high)}。
+    city/district 需与geocode返回的格式一致（city不带"市"字）。"""
+    if not RENT_STANDARD_CSV.exists():
+        return {}
+    df = pd.read_csv(RENT_STANDARD_CSV, encoding="utf-8-sig")
+    return {
+        (str(r["city"]).strip(), str(r["district"]).strip()): (int(r["low"]), int(r["high"]))
+        for _, r in df.iterrows()
+    }
+
+
+def lookup_rent_standard(city: str, district: str):
+    """查行政区标准范围 (low, high)；查不到返回 None。"""
+    table = load_rent_standard()
+    city_clean = str(city).replace("市", "").strip()
+    return table.get((city_clean, str(district).strip()))
+
+
+@st.cache_resource(show_spinner=False)
+def load_rent_model():
+    """加载训练好的Ridge回归模型（joblib格式，含pipeline+use_log标记）。加载失败返回None。"""
+    if not RENT_MODEL_PATH.exists():
+        return None
+    try:
+        import joblib
+        return joblib.load(RENT_MODEL_PATH)
+    except Exception:
+        return None
+
+
+def predict_target_rent(city: str, district: str, transit_count: int, industrial_count: int, mall_count: int):
+    """用Ridge回归模型预测目标单车位租金，并按行政区标准范围夹取。
+    模型基于598个历史场地训练（城市+行政区 + 2km内交通枢纽/工业园/商场数量），
+    刻意不含AI视觉分类特征，因此可在调用Coze之前独立完成预测（持出集MAPE 9.99%）。
+    返回 (目标租金, 边界上限, 谈判起点价)，任一环节数据缺失则返回 (None, None, None)。"""
+    bundle = load_rent_model()
+    std = lookup_rent_standard(city, district)
+    if bundle is None or std is None:
+        return None, None, None
+
+    import pandas as _pd
+    city_clean = str(city).replace("市", "").strip()
+    row = _pd.DataFrame([{
+        "city_district": f"{city_clean}-{district}",
+        "transit_count": transit_count,
+        "industrial_count": industrial_count,
+        "mall_count": mall_count,
+    }])
+    try:
+        pred = bundle["pipeline"].predict(row)[0]
+        raw_target = float(np.exp(pred)) if bundle["use_log"] else float(pred)
+    except Exception:
+        return None, None, None
+
+    low, high = std
+    target = max(low, min(high, round(raw_target / 10) * 10))  # 夹取在标准范围内，取整到10元
+    boundary = high  # 边界=行政区标准上限（硬性规则，不由模型预测）
+    opening = max(low, round(target * 0.9 / 10) * 10)  # 起点价=目标价的90%，同样不低于标准下限
+    return target, boundary, opening
 
 
 def geocode(address: str):
@@ -207,8 +273,10 @@ def _kw_at_end(name_m: str, keywords: list) -> bool:
     return False
 
 
-def find_nearby_transit(coord: str) -> str:
-    """2km内城轨/地铁/高铁/城际站，结果传给 Coze 防止误判距离。"""
+def find_nearby_transit(coord: str):
+    """2km内城轨/地铁/高铁/城际站。返回 (展示用文本, 完整数量)——
+    完整数量与train_rent_model.py的count_transit同口径，用于回归模型特征，
+    不受展示截断（只显示前3个）影响。"""
     keywords = "地铁站|城轨站|高铁站|城际站|轻轨站|火车站"
     NAME_MUST_CONTAIN = ["地铁", "城轨", "高铁", "城际", "轻轨", "火车站"]
     EXCLUDE = ["出口", "停车", "公交", "换乘中心"]
@@ -216,7 +284,7 @@ def find_nearby_transit(coord: str) -> str:
         r = requests.get(
             "https://restapi.amap.com/v3/place/around",
             params={"location": coord, "keywords": keywords, "radius": 2000,
-                    "sortrule": "distance", "offset": 5, "page": 1,
+                    "sortrule": "distance", "offset": 10, "page": 1,
                     "key": AMAP_KEY, "output": "json"},
             timeout=10,
         ).json()
@@ -226,15 +294,16 @@ def find_nearby_transit(coord: str) -> str:
                 and "-" not in _name_main(str(p.get("name", "")))
                 and not any(kw in str(p.get("name", "")) for kw in EXCLUDE)]
         if not pois:
-            return ""
+            return "", 0
         lines = [f"{p.get('name', '').strip()}（{p.get('distance', '')}m）" for p in pois[:3]]
-        return "【周边交通枢纽（高德自动检索，2km内）】\n" + "\n".join(lines)
+        text = "【周边交通枢纽（高德自动检索，2km内）】\n" + "\n".join(lines)
+        return text, len(pois)
     except Exception:
-        return ""
+        return "", 0
 
 
-def find_nearby_industrial(coord: str) -> str:
-    """2km内工业园/产业园，结果传给 Coze 防止误判距离。"""
+def find_nearby_industrial(coord: str):
+    """2km内工业园/产业园。返回 (展示用文本, 完整数量)，同上原则。"""
     keywords = "产业园|工业园|工业区|科技园|工业城|产业城|创新中心|研发中心"
     NAME_MUST_CONTAIN = [
         "产业园", "工业园", "工业区", "科技园", "工业城", "产业城",
@@ -244,7 +313,7 @@ def find_nearby_industrial(coord: str) -> str:
         r = requests.get(
             "https://restapi.amap.com/v3/place/around",
             params={"location": coord, "keywords": keywords, "radius": 2000,
-                    "sortrule": "distance", "offset": 8, "page": 1,
+                    "sortrule": "distance", "offset": 20, "page": 1,
                     "key": AMAP_KEY, "output": "json"},
             timeout=10,
         ).json()
@@ -253,16 +322,17 @@ def find_nearby_industrial(coord: str) -> str:
                 if _kw_at_end(_name_main(str(p.get("name", ""))), NAME_MUST_CONTAIN)
                 and "-" not in _name_main(str(p.get("name", "")))]
         if not pois:
-            return ""
+            return "", 0
         lines = [f"{p.get('name', '').strip()}（{p.get('distance', '')}m）" for p in pois[:5]]
-        return "【周边工业园/产业园（高德自动检索，2km内）】\n" + "\n".join(lines)
+        text = "【周边工业园/产业园（高德自动检索，2km内）】\n" + "\n".join(lines)
+        return text, len(pois)
     except Exception:
-        return ""
+        return "", 0
 
 
 
-def find_nearby_commercial(coord: str) -> str:
-    """2km内商场/购物中心，结果传给 Coze 补充地图盲区。
+def find_nearby_commercial(coord: str):
+    """2km内商场/购物中心。返回 (展示用文本, 完整数量)，同上原则。
     双查询合并：商场分类码060100 + 商业关键词，均以"POI官方类型含'商场'"过滤，
     不会混入餐馆/店铺（官方类型≠商户自报类型）。
     旧的名称白名单方案会漏掉永旺梦乐城等不含"广场/中心"字样的大型商场。"""
@@ -296,10 +366,11 @@ def find_nearby_commercial(coord: str) -> str:
                 dist = 0
             results.append((dist, f"{name}（{dist}m，{subtype}）"))
     if not results:
-        return ""
+        return "", 0
     results.sort()
     lines = [t for _, t in results[:5]]
-    return "【周边商场/购物中心（高德自动检索，2km内）】\n" + "\n".join(lines)
+    text = "【周边商场/购物中心（高德自动检索，2km内）】\n" + "\n".join(lines)
+    return text, len(results)
 
 
 def find_benchmarks(coord: str, city: str, station_name: str, df: pd.DataFrame):
@@ -833,7 +904,7 @@ if submitted:
 
         # Step 2.5：查周边交通枢纽 + 大型商业设施
         st.write("🚉 正在查询周边交通枢纽（高德 2km 搜索）…")
-        nearby_tr = find_nearby_transit(coord)
+        nearby_tr, transit_count = find_nearby_transit(coord)
         if nearby_tr:
             for line in nearby_tr.split("\n")[1:]:
                 if line.strip():
@@ -842,7 +913,7 @@ if submitted:
             st.write("  · 2km 内未检索到城轨/地铁/高铁站")
 
         st.write("🏭 正在查询周边工业园/产业园（高德 2km 搜索）…")
-        nearby_ind = find_nearby_industrial(coord)
+        nearby_ind, industrial_count = find_nearby_industrial(coord)
         if nearby_ind:
             for line in nearby_ind.split("\n")[1:]:
                 if line.strip():
@@ -851,7 +922,7 @@ if submitted:
             st.write("  · 2km 内未检索到工业园/产业园")
 
         st.write("🏬 正在查询周边大型商业设施（高德 2km 关键词搜索）…")
-        nearby = find_nearby_commercial(coord)
+        nearby, mall_count = find_nearby_commercial(coord)
         if nearby:
             for line in nearby.split("\n")[1:]:   # 跳过标题行
                 if line.strip():
@@ -871,12 +942,36 @@ if submitted:
             for d_km, row in supplement:
                 st.write(f"  · {row['name']}（同类型补充） — {round(d_km, 2)} km")
 
+        # Step 2.7：Ridge回归模型预测目标租金（598个历史场地训练，MAPE 9.99%）
+        # 在调用Coze之前完成，边界=行政区标准硬上限，目标=模型预测夹取在标准范围内，
+        # 起点价=目标的90%——三个数字全部由Python确定性算出，作为既定事实传给Coze，
+        # LLM不再自行判断该用哪个案例当锚点、该不该打折，只负责写支撑这些数字的说明文字。
+        st.write("📈 正在用统计模型预测目标租金（598个历史场地训练）…")
+        model_target, model_boundary, model_opening = predict_target_rent(
+            city, district, transit_count, industrial_count, mall_count
+        )
+        if model_target:
+            st.write(f"  · 模型预测目标租金：{model_target:.0f} 元 ｜ 边界：{model_boundary} 元 ｜ 起点价：{model_opening:.0f} 元")
+        else:
+            st.write("  ⚠️ 未找到该行政区的租金标准或模型不可用，将退回由AI自行判断数字")
+
         # Step 3：调用 Coze 工作流（流式优先，失败回退非流式）
         # 复用上面已查询的POI结果，避免重复请求高德API
         benchmark_info = format_benchmark_info(benches or [], supplement)
         for extra in (nearby_tr, nearby_ind, nearby):
             if extra:
                 benchmark_info = benchmark_info + "\n\n" + extra
+        if model_target:
+            benchmark_info += (
+                f"\n\n【系统统计模型预测（最高优先级，覆盖以下所有对标案例的数字推断）】\n"
+                f"基于598个历史场地训练的Ridge回归模型（城市/行政区+2km内交通枢纽/工业园/商场数量特征，"
+                f"持出测试集MAPE 9.99%）预测：\n"
+                f"建议单车位租金边界：{model_boundary}元/车位/月（=本行政区标准上限，硬性规则）\n"
+                f"建议目标单车位租金：{model_target:.0f}元/车位/月（模型预测值，已夹取在行政区标准范围内）\n"
+                f"谈判起点价：{model_opening:.0f}元/车位/月（目标价的90%）\n"
+                f"请直接采用以上三个数字，不得自行调整或重新计算；"
+                f"以上方对标案例和本站点特征为依据，说明这些数字为何合理即可。"
+            )
 
         st.write("🤖 正在调用 Coze 工作流（报告将实时逐字显示）…")
         stream_placeholder = st.empty()
@@ -893,6 +988,7 @@ if submitted:
     st.session_state.eval_benches = benches
     st.session_state.eval_supplement = supplement
     st.session_state.eval_pois    = {"🚉 交通枢纽": nearby_tr, "🏭 工业园/产业园": nearby_ind, "🏬 大型商业设施": nearby}
+    st.session_state.eval_model   = {"target": model_target, "boundary": model_boundary, "opening": model_opening}
 
 # ── 双视图展示（从 session_state 读取，刷新不丢失）────
 if st.session_state.eval_result:
@@ -910,13 +1006,24 @@ if st.session_state.eval_result:
 
     # ── 财务BP 视图 ───────────────────────────
     with tab_finance:
-        # 关键数字一览
-        _boundary = extract_boundary(result)
-        _target, _opening = extract_key_numbers(result)
+        # 关键数字一览：优先用Python统计模型算出的确定性数字（session_state.eval_model），
+        # 只有模型不可用（如查不到行政区标准）时才退回从AI报告文字里正则提取
+        _model_nums = st.session_state.get("eval_model") or {}
+        if _model_nums.get("target"):
+            _boundary = str(int(_model_nums["boundary"]))
+            _target   = str(int(round(_model_nums["target"])))
+            _opening  = str(int(round(_model_nums["opening"])))
+        else:
+            _boundary = extract_boundary(result)
+            _target, _opening = extract_key_numbers(result)
         if any([_boundary, _target, _opening]):
-            # 行政区土地租金标准范围（从报告文本提取）
-            _range_m = re.search(r"租金标准[^\d]{0,15}(\d+)\s*[-–~至—]\s*(\d+)", result)
-            _range_str = f"{_range_m.group(1)} – {_range_m.group(2)}" if _range_m else "—"
+            # 行政区土地租金标准范围：优先查本地rent_standard.csv，查不到再退回从报告文字提取
+            _std = lookup_rent_standard(city, district)
+            if _std:
+                _range_str = f"{_std[0]} – {_std[1]}"
+            else:
+                _range_m = re.search(r"租金标准[^\d]{0,15}(\d+)\s*[-–~至—]\s*(\d+)", result)
+                _range_str = f"{_range_m.group(1)} – {_range_m.group(2)}" if _range_m else "—"
             # 价格主卡：目标租金居中最大，其余价格自上而下递减
             _t = _target if _target else "—"
             _o = _opening if _opening else "—"
@@ -943,10 +1050,13 @@ if st.session_state.eval_result:
 """,
                 unsafe_allow_html=True,
             )
-            # 边界锚点+推理依据小字摘要（定价的核心依据）
-            _anchor = re.search(r"边界锚点[：:]\s*([^\n。；]+)", result)
-            if _anchor:
-                st.caption(f"⚓ 边界锚点：{_anchor.group(1).strip()}")
+            if _model_nums.get("target"):
+                st.caption("📈 以上边界/目标/起点价由统计模型计算（598个历史场地训练，持出测试集MAPE 9.99%），下方为AI针对此数字的定性说明")
+            else:
+                # 模型不可用时的旧路径：边界锚点+推理依据从AI报告文字提取
+                _anchor = re.search(r"边界锚点[：:]\s*([^\n。；]+)", result)
+                if _anchor:
+                    st.caption(f"⚓ 边界锚点：{_anchor.group(1).strip()}")
             _br = re.search(r"边界推理依据[：:]\s*([^\n]+)", result)
             if _br:
                 st.caption(f"💰 边界推理依据：{_br.group(1).strip()}")
