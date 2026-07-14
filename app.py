@@ -1266,74 +1266,96 @@ if st.session_state.eval_result:
                 with _col_map:
                     render_static_maps(coord)
                 with _col_txt:
+                    # 右侧定位分析：小标签 → 大结论 → 松弛依据，段落间大留白
                     _loc_html = []
-                    # AI站点定位：结论值加粗，依据为灰色小字引用样式
+
+                    def _sec_open(label, value, value_size="1.15rem", value_bold=True):
+                        w = "700" if value_bold else "400"
+                        return (
+                            f"<div style='margin-bottom:20px'>"
+                            f"<div style='font-size:0.78rem;color:#9aa7bd;letter-spacing:2px;margin-bottom:3px'>{label}</div>"
+                            f"<div style='font-size:{value_size};font-weight:{w};color:#1a2b4a;line-height:1.75'>{value}</div>"
+                        )
+
+                    _blocks = []   # 每个元素是一段完整HTML
                     for _raw in get_section_lines(result, "📍"):
                         _s = _raw.strip()
                         if not _s:
                             continue
                         _m = re.match(r"^(商圈类型|道路条件)[：:]\s*(.+)$", _s)
                         if _m:
-                            _loc_html.append(
-                                f"<div style='margin-top:14px;color:#44536f'>{_m.group(1)}："
-                                f"<b style='font-size:1.08rem;color:#1a2b4a'>{_m.group(2)}</b></div>"
-                            )
+                            _blocks.append({"label": _m.group(1), "value": _m.group(2), "reason": ""})
                             continue
                         _m = re.match(r"^依据[：:]\s*(.+)$", _s)
-                        if _m:
-                            _loc_html.append(
-                                f"<div style='margin-top:5px;padding-left:12px;border-left:3px solid #dbe4f3;"
-                                f"color:#6b7a94;font-size:0.88rem;line-height:1.8'>{_m.group(1)}</div>"
-                            )
+                        if _m and _blocks:
+                            _blocks[-1]["reason"] = _m.group(1)
                             continue
                         _m = re.match(r"^地段价值[：:]\s*(.+)$", _s)
                         if _m:
-                            _loc_html.append(
-                                f"<div style='margin-top:14px;color:#44536f'>地段价值："
-                                f"<b style='color:#1a2b4a'>{_m.group(1)}</b></div>"
-                            )
+                            _blocks.append({"label": "地段价值", "value": _m.group(2), "reason": "", "plain": True})
                             continue
-                        _loc_html.append(f"<div style='margin-top:6px;color:#31333F;line-height:1.9'>{_s}</div>")
-                    # 周边路网（regeo最近道路，只列名称/方位/距离，不猜等级）
+
+                    for _b in _blocks:
+                        _plain = _b.get("plain")
+                        _loc_html.append(_sec_open(
+                            _b["label"], _b["value"],
+                            value_size="0.95rem" if _plain else "1.15rem",
+                            value_bold=not _plain,
+                        ))
+                        if _b["reason"]:
+                            _loc_html.append(
+                                f"<div style='margin-top:7px;color:#8a97ad;font-size:0.85rem;line-height:1.9'>{_b['reason']}</div>"
+                            )
+                        _loc_html.append("</div>")
+
+                    # 周边路网：胶囊标签（regeo最近道路，只列名称/方位/距离，不猜等级）
                     _roads = (st.session_state.get("eval_roads") or {}).get("roads") or []
                     if _roads:
-                        _road_items = "　".join(
-                            f"<b style='color:#1a2b4a'>{n}</b>"
-                            f"<span style='color:#8a97ad;font-size:0.85rem'>（{d}侧·约{dist:.0f}m）</span>"
+                        _pills = "".join(
+                            f"<span style='background:#f2f6fd;border:1px solid #e3eaf6;border-radius:999px;"
+                            f"padding:4px 13px;font-size:0.82rem;color:#44536f;display:inline-block;"
+                            f"margin:0 8px 8px 0;white-space:nowrap'>"
+                            f"<b style='color:#1a2b4a'>{n}</b>　{d}侧 · 约{dist:.0f}m</span>"
                             for n, d, dist in _roads
                         )
                         _loc_html.append(
-                            f"<div style='margin-top:14px;padding-top:10px;border-top:1px dashed #dbe4f3;"
-                            f"color:#44536f'>周边路网：{_road_items}</div>"
+                            f"<div style='padding-top:14px;border-top:1px dashed #dbe4f3'>"
+                            f"<div style='font-size:0.78rem;color:#9aa7bd;letter-spacing:2px;margin-bottom:8px'>周边路网</div>"
+                            f"{_pills}</div>"
                         )
                     if _loc_html:
-                        # 首个元素去掉顶部间距，与左侧地图顶部对齐
-                        if _loc_html and "margin-top:14px" in _loc_html[0]:
-                            _loc_html[0] = _loc_html[0].replace("margin-top:14px", "margin-top:0", 1)
                         st.markdown("".join(_loc_html), unsafe_allow_html=True)
 
         # ── 周边设施统计（紧凑横向条：3类服务器端 + 住宅小区浏览器端）──
         if any(_pois.values()) or coord:
             _chips_srv = ""
             _details_srv = ""
+            _first_dist_re = re.compile(r"（(\d+)m")
             for _lbl, _text in _pois.items():
                 _items = _poi_items(_text)
+                # 最近距离（明细第一条括号里的距离）
+                _near = ""
+                if _items:
+                    _dm = _first_dist_re.search(_items[0])
+                    _near = f"最近 {_dm.group(1)}m" if _dm else ""
                 _chips_srv += (
-                    f"<div style='flex:1;background:linear-gradient(180deg,#f8faff,#eef3fb);"
-                    f"border:1px solid #dbe4f3;border-radius:10px;padding:8px 6px;text-align:center'>"
-                    f"<div style='color:#5b6b8c;font-size:12.5px'>{_lbl}</div>"
-                    f"<div style='font-size:1.5rem;font-weight:700;color:#1a2b4a'>{len(_items)} 个</div></div>"
+                    f"<div style='background:#ffffff;border:1px solid #e6ecf5;border-radius:12px;"
+                    f"padding:12px 8px 10px;text-align:center;box-shadow:0 1px 4px rgba(26,43,74,0.05)'>"
+                    f"<div style='color:#8a97ad;font-size:12px;letter-spacing:1px'>{_lbl}</div>"
+                    f"<div style='font-size:1.65rem;font-weight:800;color:#1e3c72;line-height:1.4'>{len(_items)}"
+                    f"<span style='font-size:0.8rem;font-weight:400;color:#9aa7bd'> 个</span></div>"
+                    f"<div style='color:#9aa7bd;font-size:11px'>{_near or '&nbsp;'}</div></div>"
                 )
                 _details_srv += f"<b>{_lbl}</b>：{'、'.join(_items) if _items else '2km内未检索到'}<br>"
             # 浏览器端补充统计的类别（仿领导工具的"环境构成"，但仅做展示参考，不参与区域类型判断）
             _browser_cats_html = ""
             for _i, (_emoji_lbl,) in enumerate([("🏘️ 住宅小区",), ("🏢 写字楼",), ("🏫 中小学",), ("🏥 医院",), ("🌳 公园广场",)]):
                 _browser_cats_html += (
-                    f"<div style='background:linear-gradient(180deg,#f8faff,#eef3fb);"
-                    f"border:1px solid #dbe4f3;border-radius:10px;padding:8px 6px;text-align:center'>"
-                    f"<div style='color:#5b6b8c;font-size:12.5px'>{_emoji_lbl}</div>"
-                    f"<div id='cnt{_i}' style='font-size:1.5rem;font-weight:700;color:#1a2b4a'>…</div>"
-                    f"<div id='near{_i}' style='color:#8a97ad;font-size:11px'>&nbsp;</div></div>"
+                    f"<div style='background:#ffffff;border:1px solid #e6ecf5;border-radius:12px;"
+                    f"padding:12px 8px 10px;text-align:center;box-shadow:0 1px 4px rgba(26,43,74,0.05)'>"
+                    f"<div style='color:#8a97ad;font-size:12px;letter-spacing:1px'>{_emoji_lbl}</div>"
+                    f"<div id='cnt{_i}' style='font-size:1.65rem;font-weight:800;color:#1e3c72;line-height:1.4'>…</div>"
+                    f"<div id='near{_i}' style='color:#9aa7bd;font-size:11px'>&nbsp;</div></div>"
                 )
             _strip_html = f"""
 <div style="font-family:-apple-system,'PingFang SC','Source Sans Pro',sans-serif">
@@ -1366,7 +1388,8 @@ async function loadCat(types, idx, wantDetail) {{
   const j = await r.json();
   const total = parseInt(j.count || "0");
   const pois = j.pois || [];
-  document.getElementById("cnt" + idx).innerHTML = total + " 个";
+  document.getElementById("cnt" + idx).innerHTML = total +
+    "<span style='font-size:0.8rem;font-weight:400;color:#9aa7bd'> 个</span>";
   if (pois.length) {{
     document.getElementById("near" + idx).innerHTML = "最近 " + pois[0].distance + "m";
   }} else {{
