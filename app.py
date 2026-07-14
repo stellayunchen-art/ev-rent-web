@@ -1052,7 +1052,8 @@ if submitted:
             st.write("  ⚠️ 流式接口不可用，切换为普通模式（通常需要 30–90 秒）…")
             result = call_workflow(f_name, city, district, f_addr, coord, benchmark_info)
         stream_placeholder.empty()
-        status_box.update(label="✅ 评估完成！", state="complete")
+        # 完成后折叠过程日志（可点开审计），页面直接呈现结果
+        status_box.update(label="✅ 评估完成（点击展开查看评估过程日志）", state="complete", expanded=False)
 
     # 保存结果到 session_state，防止标签页切换/重渲染时结果丢失
     st.session_state.eval_result  = result
@@ -1079,6 +1080,20 @@ if st.session_state.eval_result:
 
     # ── 财务BP 视图 ───────────────────────────
     with tab_finance:
+        # 场地信息头条（城市/行政区/识别地址/坐标一行看全）
+        st.markdown(
+            f"""
+<div style="display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;margin:2px 0 2px">
+  <span style="font-size:1.25rem;font-weight:800;color:#1a2b4a">📍 {f_name or '—'}</span>
+  <span style="font-size:1rem;font-weight:700;color:#44536f">{city} · {district}</span>
+</div>
+<div style="color:#8a97ad;font-size:0.85rem;margin-bottom:12px">
+  高德识别地址：{f_addr}　|　坐标：{coord}
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
         # 关键数字一览：优先用Python统计模型算出的确定性数字（session_state.eval_model），
         # 只有模型不可用（如查不到行政区标准）时才退回从AI报告文字里正则提取
         _model_nums = st.session_state.get("eval_model") or {}
@@ -1097,27 +1112,35 @@ if st.session_state.eval_result:
             else:
                 _range_m = re.search(r"租金标准[^\d]{0,15}(\d+)\s*[-–~至—]\s*(\d+)", result)
                 _range_str = f"{_range_m.group(1)} – {_range_m.group(2)}" if _range_m else "—"
-            # 价格主卡：目标租金居中最大，其余价格自上而下递减
+            # 价格主卡：横向三价并排（起点→目标居中最大→边界），底部注明标准范围与数字来源
             _t = _target if _target else "—"
             _o = _opening if _opening else "—"
             _b = _boundary if _boundary else "—"
+            _src_note = ("统计模型计算 · 598个历史场地 · MAPE 9.99%"
+                         if _model_nums.get("target") else "AI评估提取")
             st.markdown(
                 f"""
 <div style="background:linear-gradient(135deg,#1e3c72 0%,#2a5298 100%);
-     border-radius:16px;padding:30px 24px 20px;text-align:center;
+     border-radius:16px;padding:26px 24px 16px;text-align:center;
      color:#ffffff;margin-bottom:10px">
-  <div style="font-size:0.95rem;color:rgba(255,255,255,0.85)">🎯 建议目标单车位租金</div>
-  <div style="font-size:3.2rem;font-weight:800;line-height:1.2;letter-spacing:1px">¥{_t}</div>
-  <div style="font-size:0.85rem;color:rgba(255,255,255,0.7)">元 / 车位 / 月</div>
-  <div style="margin-top:16px;font-size:1.05rem;color:rgba(255,255,255,0.95)">
-    🤝 谈判起点价&nbsp;<b style="font-size:1.25rem">¥{_o}</b>
+  <div style="font-size:0.95rem;color:rgba(255,255,255,0.85);margin-bottom:14px">综合建议租金（首年价，元/车位/月）</div>
+  <div style="display:flex;justify-content:center;align-items:flex-end;gap:56px">
+    <div>
+      <div style="font-size:0.85rem;color:rgba(255,255,255,0.75)">🤝 谈判起点</div>
+      <div style="font-size:1.9rem;font-weight:700;line-height:1.3">¥{_o}</div>
+    </div>
+    <div>
+      <div style="font-size:0.95rem;color:#ffd43b;font-weight:600">🎯 建议目标</div>
+      <div style="font-size:3rem;font-weight:800;line-height:1.15;letter-spacing:1px">¥{_t}</div>
+    </div>
+    <div>
+      <div style="font-size:0.85rem;color:rgba(255,255,255,0.75)">💰 边界上限</div>
+      <div style="font-size:1.9rem;font-weight:700;line-height:1.3">¥{_b}</div>
+    </div>
   </div>
-  <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.25);
-       font-size:0.92rem;color:rgba(255,255,255,0.85)">
-    💰 租金边界（上限）<b>¥{_b}</b>
-  </div>
-  <div style="margin-top:8px;font-size:0.85rem;color:rgba(255,255,255,0.65)">
-    🏛️ 行政区租金标准 {_range_str} 元/车位/月
+  <div style="margin-top:16px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.22);
+       font-size:0.82rem;color:rgba(255,255,255,0.65)">
+    🏛️ 行政区租金标准 {_range_str} 元/车位/月　·　📈 {_src_note}
   </div>
 </div>
 """,
