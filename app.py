@@ -593,16 +593,24 @@ def static_map_urls(coord: str):
 
 
 def render_static_maps(coord: str):
-    """三列并排展示站点周边静态地图。"""
-    cols = st.columns(3)
-    captions = {
-        "3km": "图幅3km · 片区业态（可见≤3km）",
-        "2km": "图幅2km · 周边环境（可见≤2km）",
-        "1km": "图幅1km · 紧邻环境（可见≤1km）",
-    }
-    for col, (label, url) in zip(cols, static_map_urls(coord)):
-        with col:
-            st.image(url, caption=captions[label], width="stretch")
+    """标签页大图展示站点周边地图。
+    ⚠️ 这是给人看的展示图，与传给Coze视觉分析的三张固定图幅（static_map_urls）是两套，互不影响：
+    AI用的图幅必须精确（3/2/1km，距离推断依赖它），展示图则追求清晰放大（高zoom+大像素）。"""
+    coord = str(coord).replace(" ", "").strip()
+    base = "https://restapi.amap.com/v3/staticmap"
+    marker = f"mid,,A:{coord}"
+    # 展示图规格（广东纬度约23°）：zoom=16@910px宽≈2km、zoom=17≈1km、zoom=15≈4km
+    display_specs = [
+        ("🏘️ 周边环境（约2km）", 16),
+        ("🔍 紧邻街区（约1km）", 17),
+        ("🗺️ 片区格局（约4km）", 15),
+    ]
+    tabs = st.tabs([label for label, _ in display_specs])
+    for tab, (label, z) in zip(tabs, display_specs):
+        with tab:
+            url = f"{base}?location={coord}&zoom={z}&size=910*568&markers={marker}&key={AMAP_KEY}"
+            st.image(url, width="stretch")
+    st.caption("📍 红色标记为站点位置 · 切换标签查看不同范围（评估AI使用的是另一套精确图幅地图，不受此处显示影响）")
 
 
 def format_report(result: str) -> str:
