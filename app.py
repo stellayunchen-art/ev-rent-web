@@ -1261,49 +1261,56 @@ if st.session_state.eval_result:
                         f"margin-bottom:12px'>🟢 {_feat}</div>",
                         unsafe_allow_html=True,
                     )
-                render_static_maps(coord)
-                _loc_html = []
-                # AI站点定位：结论值加粗，依据为灰色小字引用样式
-                for _raw in get_section_lines(result, "📍"):
-                    _s = _raw.strip()
-                    if not _s:
-                        continue
-                    _m = re.match(r"^(商圈类型|道路条件)[：:]\s*(.+)$", _s)
-                    if _m:
-                        _loc_html.append(
-                            f"<div style='margin-top:14px;color:#44536f'>{_m.group(1)}："
-                            f"<b style='font-size:1.08rem;color:#1a2b4a'>{_m.group(2)}</b></div>"
+                # 左图右文布局（仿领导版）：左侧地图标签页，右侧AI定位分析
+                _col_map, _col_txt = st.columns([1.1, 1], gap="medium")
+                with _col_map:
+                    render_static_maps(coord)
+                with _col_txt:
+                    _loc_html = []
+                    # AI站点定位：结论值加粗，依据为灰色小字引用样式
+                    for _raw in get_section_lines(result, "📍"):
+                        _s = _raw.strip()
+                        if not _s:
+                            continue
+                        _m = re.match(r"^(商圈类型|道路条件)[：:]\s*(.+)$", _s)
+                        if _m:
+                            _loc_html.append(
+                                f"<div style='margin-top:14px;color:#44536f'>{_m.group(1)}："
+                                f"<b style='font-size:1.08rem;color:#1a2b4a'>{_m.group(2)}</b></div>"
+                            )
+                            continue
+                        _m = re.match(r"^依据[：:]\s*(.+)$", _s)
+                        if _m:
+                            _loc_html.append(
+                                f"<div style='margin-top:5px;padding-left:12px;border-left:3px solid #dbe4f3;"
+                                f"color:#6b7a94;font-size:0.88rem;line-height:1.8'>{_m.group(1)}</div>"
+                            )
+                            continue
+                        _m = re.match(r"^地段价值[：:]\s*(.+)$", _s)
+                        if _m:
+                            _loc_html.append(
+                                f"<div style='margin-top:14px;color:#44536f'>地段价值："
+                                f"<b style='color:#1a2b4a'>{_m.group(1)}</b></div>"
+                            )
+                            continue
+                        _loc_html.append(f"<div style='margin-top:6px;color:#31333F;line-height:1.9'>{_s}</div>")
+                    # 周边路网（regeo最近道路，只列名称/方位/距离，不猜等级）
+                    _roads = (st.session_state.get("eval_roads") or {}).get("roads") or []
+                    if _roads:
+                        _road_items = "　".join(
+                            f"<b style='color:#1a2b4a'>{n}</b>"
+                            f"<span style='color:#8a97ad;font-size:0.85rem'>（{d}侧·约{dist:.0f}m）</span>"
+                            for n, d, dist in _roads
                         )
-                        continue
-                    _m = re.match(r"^依据[：:]\s*(.+)$", _s)
-                    if _m:
                         _loc_html.append(
-                            f"<div style='margin-top:5px;padding-left:12px;border-left:3px solid #dbe4f3;"
-                            f"color:#6b7a94;font-size:0.88rem;line-height:1.8'>{_m.group(1)}</div>"
+                            f"<div style='margin-top:14px;padding-top:10px;border-top:1px dashed #dbe4f3;"
+                            f"color:#44536f'>周边路网：{_road_items}</div>"
                         )
-                        continue
-                    _m = re.match(r"^地段价值[：:]\s*(.+)$", _s)
-                    if _m:
-                        _loc_html.append(
-                            f"<div style='margin-top:14px;color:#44536f'>地段价值："
-                            f"<b style='color:#1a2b4a'>{_m.group(1)}</b></div>"
-                        )
-                        continue
-                    _loc_html.append(f"<div style='margin-top:6px;color:#31333F;line-height:1.9'>{_s}</div>")
-                # 周边路网（regeo最近道路，只列名称/方位/距离，不猜等级）
-                _roads = (st.session_state.get("eval_roads") or {}).get("roads") or []
-                if _roads:
-                    _road_items = "　".join(
-                        f"<b style='color:#1a2b4a'>{n}</b>"
-                        f"<span style='color:#8a97ad;font-size:0.85rem'>（{d}侧·约{dist:.0f}m）</span>"
-                        for n, d, dist in _roads
-                    )
-                    _loc_html.append(
-                        f"<div style='margin-top:14px;padding-top:10px;border-top:1px dashed #dbe4f3;"
-                        f"color:#44536f'>周边路网：{_road_items}</div>"
-                    )
-                if _loc_html:
-                    st.markdown("".join(_loc_html), unsafe_allow_html=True)
+                    if _loc_html:
+                        # 首个元素去掉顶部间距，与左侧地图顶部对齐
+                        if _loc_html and "margin-top:14px" in _loc_html[0]:
+                            _loc_html[0] = _loc_html[0].replace("margin-top:14px", "margin-top:0", 1)
+                        st.markdown("".join(_loc_html), unsafe_allow_html=True)
 
         # ── 周边设施统计（紧凑横向条：3类服务器端 + 住宅小区浏览器端）──
         if any(_pois.values()) or coord:
