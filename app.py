@@ -435,6 +435,30 @@ def find_nearby_commercial(coord: str):
     return text, len(results)
 
 
+def find_nearby_roads(coord: str):
+    """regeo逆地理编码：返回 (街道名, [(道路名, 方位, 距离m), ...最近3条])。
+    ⚠️ 高德不提供道路等级（此前已验证），故只展示名称/方位/距离，不按名称猜等级
+    （"XX大道"未必是主干道——领导工具按名称标注等级的做法有误判风险，不学）。"""
+    try:
+        r = requests.get(
+            "https://restapi.amap.com/v3/geocode/regeo",
+            params={"location": coord, "key": AMAP_KEY, "extensions": "all", "output": "json"},
+            timeout=10,
+        ).json()
+        rc = r.get("regeocode") or {}
+        township = str((rc.get("addressComponent") or {}).get("township") or "")
+        roads = []
+        for rd in (rc.get("roads") or []):
+            try:
+                roads.append((str(rd.get("name", "")), str(rd.get("direction", "")), float(rd.get("distance", 0))))
+            except (ValueError, TypeError):
+                continue
+        roads.sort(key=lambda x: x[2])
+        return township, roads[:5]
+    except Exception:
+        return "", []
+
+
 def find_benchmarks(coord: str, city: str, station_name: str, df: pd.DataFrame):
     if df.empty:
         return []
@@ -1029,6 +1053,9 @@ if submitted:
         else:
             st.write("  ⚠️ 未找到该行政区的租金标准或模型不可用，将退回由AI自行判断数字")
 
+        # Step 2.75：周边路网（regeo最近道路，展示用）
+        township, nearby_roads = find_nearby_roads(coord)
+
         # Step 2.8：置信度评估（确定性规则：训练样本覆盖 + POI密度 + 对标距离）
         conf_level, conf_reasons, conf_advice = assess_confidence(
             city, district, transit_count, industrial_count, mall_count, benches
@@ -1071,6 +1098,7 @@ if submitted:
     st.session_state.eval_pois    = {"🚉 交通枢纽": nearby_tr, "🏭 工业园/产业园": nearby_ind, "🏬 大型商业设施": nearby}
     st.session_state.eval_model   = {"target": model_target, "boundary": model_boundary, "opening": model_opening}
     st.session_state.eval_confidence = {"level": conf_level, "reasons": conf_reasons, "advice": conf_advice}
+    st.session_state.eval_roads = {"township": township, "roads": nearby_roads}
 
 # ── 双视图展示（从 session_state 读取，刷新不丢失）────
 if st.session_state.eval_result:
@@ -1088,12 +1116,13 @@ if st.session_state.eval_result:
 
     # ── 财务BP 视图 ───────────────────────────
     with tab_finance:
-        # 场地信息头条（城市/行政区/识别地址/坐标一行看全）
+        # 场地信息头条（城市/行政区/街道/识别地址/坐标一行看全）
+        _township = (st.session_state.get("eval_roads") or {}).get("township", "")
         st.markdown(
             f"""
 <div style="display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;margin:2px 0 2px">
   <span style="font-size:1.25rem;font-weight:800;color:#1a2b4a">📍 {f_name or '—'}</span>
-  <span style="font-size:1rem;font-weight:700;color:#44536f">{city} · {district}</span>
+  <span style="font-size:1rem;font-weight:700;color:#44536f">{city} · {district}{('·' + _township) if _township else ''}</span>
 </div>
 <div style="color:#8a97ad;font-size:0.85rem;margin-bottom:12px">
   高德识别地址：{f_addr}　|　坐标：{coord}
@@ -1261,6 +1290,18 @@ if st.session_state.eval_result:
                         )
                         continue
                     _loc_html.append(f"<div style='margin-top:6px;color:#31333F;line-height:1.9'>{_s}</div>")
+                # 周边路网（regeo最近道路，只列名称/方位/距离，不猜等级）
+                _roads = (st.session_state.get("eval_roads") or {}).get("roads") or []
+                if _roads:
+                    _road_items = "　".join(
+                        f"<b style='color:#1a2b4a'>{n}</b>"
+                        f"<span style='color:#8a97ad;font-size:0.85rem'>（{d}侧·约{dist:.0f}m）</span>"
+                        for n, d, dist in _roads
+                    )
+                    _loc_html.append(
+                        f"<div style='margin-top:14px;padding-top:10px;border-top:1px dashed #dbe4f3;"
+                        f"color:#44536f'>周边路网：{_road_items}</div>"
+                    )
                 if _loc_html:
                     st.markdown("".join(_loc_html), unsafe_allow_html=True)
 
@@ -1277,15 +1318,21 @@ if st.session_state.eval_result:
                     f"<div style='font-size:1.5rem;font-weight:700;color:#1a2b4a'>{len(_items)} 个</div></div>"
                 )
                 _details_srv += f"<b>{_lbl}</b>：{'、'.join(_items) if _items else '2km内未检索到'}<br>"
+            # 浏览器端补充统计的类别（仿领导工具的"环境构成"，但仅做展示参考，不参与区域类型判断）
+            _browser_cats_html = ""
+            for _i, (_emoji_lbl,) in enumerate([("🏘️ 住宅小区",), ("🏢 写字楼",), ("🏫 中小学",), ("🏥 医院",), ("🌳 公园广场",)]):
+                _browser_cats_html += (
+                    f"<div style='background:linear-gradient(180deg,#f8faff,#eef3fb);"
+                    f"border:1px solid #dbe4f3;border-radius:10px;padding:8px 6px;text-align:center'>"
+                    f"<div style='color:#5b6b8c;font-size:12.5px'>{_emoji_lbl}</div>"
+                    f"<div id='cnt{_i}' style='font-size:1.5rem;font-weight:700;color:#1a2b4a'>…</div>"
+                    f"<div id='near{_i}' style='color:#8a97ad;font-size:11px'>&nbsp;</div></div>"
+                )
             _strip_html = f"""
 <div style="font-family:-apple-system,'PingFang SC','Source Sans Pro',sans-serif">
-  <div style="display:flex;gap:10px">
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
     {_chips_srv}
-    <div style="flex:1;background:linear-gradient(180deg,#f8faff,#eef3fb);border:1px solid #dbe4f3;
-         border-radius:10px;padding:8px 6px;text-align:center">
-      <div style="color:#5b6b8c;font-size:12.5px">🏘️ 住宅小区</div>
-      <div id="cnt" style="font-size:1.5rem;font-weight:700;color:#1a2b4a">…</div>
-    </div>
+    {_browser_cats_html}
   </div>
   <div style="margin-top:10px;font-size:12.5px;color:#808495;line-height:1.9;
        max-height:130px;overflow-y:auto;background:#fafbfe;border:1px solid #eef2f9;
@@ -1294,38 +1341,48 @@ if st.session_state.eval_result:
   </div>
 </div>
 <script>
-async function load() {{
-  const KEY = "{AMAP_KEY}";
-  const coord = "{coord}";
-  let all = [];
-  for (let page = 1; page <= 3; page++) {{
-    const r = await fetch("https://restapi.amap.com/v3/place/around?location=" + coord +
-      "&types=120302&radius=2000&offset=25&page=" + page +
-      "&sortrule=distance&output=json&key=" + KEY);
-    const j = await r.json();
-    if (!j.pois || !j.pois.length) break;
-    all = all.concat(j.pois);
-    if (j.pois.length < 25) break;
+const KEY = "{AMAP_KEY}";
+const coord = "{coord}";
+// 浏览器端统计类别（国内网络直连高德，绕过海外服务器限制）
+// count字段=2km内总数；nearest取距离排序第一条
+const CATS = [
+  ["120302", 0, true],            // 住宅小区（额外拉明细清单）
+  ["120201", 1, false],           // 写字楼
+  ["141202|141203", 2, false],    // 中小学
+  ["090100", 3, false],           // 综合医院
+  ["110101|110105", 4, false],    // 公园广场
+];
+async function loadCat(types, idx, wantDetail) {{
+  const r = await fetch("https://restapi.amap.com/v3/place/around?location=" + coord +
+    "&types=" + encodeURIComponent(types) + "&radius=2000&offset=25&page=1" +
+    "&sortrule=distance&output=json&key=" + KEY);
+  const j = await r.json();
+  const total = parseInt(j.count || "0");
+  const pois = j.pois || [];
+  document.getElementById("cnt" + idx).innerHTML = total + " 个";
+  if (pois.length) {{
+    document.getElementById("near" + idx).innerHTML = "最近 " + pois[0].distance + "m";
+  }} else {{
+    document.getElementById("near" + idx).innerHTML = "范围内无";
   }}
-  const seen = new Set();
-  const items = all.filter(p => {{
-    if (seen.has(p.name)) return false;
-    seen.add(p.name); return true;
-  }});
-  document.getElementById("cnt").innerHTML = items.length + " 个";
-  document.getElementById("resdetail").innerHTML = "<b>🏘️ 住宅小区</b>：" +
-    (items.length ? items.slice(0, 30).map(p => p.name + "（" + p.distance + "m）").join("、") +
-      (items.length > 30 ? " …等共" + items.length + "个" : "") : "2km内未检索到");
+  if (wantDetail) {{
+    const seen = new Set();
+    const items = pois.filter(p => {{
+      if (seen.has(p.name)) return false;
+      seen.add(p.name); return true;
+    }});
+    document.getElementById("resdetail").innerHTML = "<b>🏘️ 住宅小区</b>：" +
+      (items.length ? items.slice(0, 25).map(p => p.name + "（" + p.distance + "m）").join("、") +
+        (total > items.length ? " …等共" + total + "个" : "") : "2km内未检索到") +
+      "<span style='color:#b0bdd4'>（注：可能含公寓/宿舍，仅供参考，不作为区域类型判断依据）</span>";
+  }}
 }}
-load().catch(e => {{
-  document.getElementById("cnt").innerHTML = "—";
-  document.getElementById("resdetail").innerHTML = "<b>🏘️ 住宅小区</b>：检索失败";
-}});
+Promise.allSettled(CATS.map(c => loadCat(c[0], c[1], c[2]))).catch(() => {{}});
 </script>
 """
             import streamlit.components.v1 as components
-            components.html(_strip_html, height=245, scrolling=True)
-            st.caption("📡 周边设施统计：2km范围，明细列表可上下滚动查看完整名单")
+            components.html(_strip_html, height=300, scrolling=True)
+            st.caption("📡 周边设施统计：2km范围 · 前三类服务器端检索并传给AI，后五类浏览器端实时检索（仅展示参考，不参与区域类型判断——住宅类POI常混入宿舍公寓）")
 
         # 对标案例对比（表格+柱状图，数据来自benchmarks匹配，非LLM文本）
         if benches:
@@ -1409,7 +1466,13 @@ load().catch(e => {{
                 _df_show["距离(km)"] = _df_show["距离(km)"].apply(lambda v: f"{v:.2f}" if isinstance(v, (int, float)) and v is not None else "—")
                 st.dataframe(
                     _df_show, hide_index=True, width="stretch",
-                    column_config={"相似/差异": st.column_config.TextColumn(width="large")},
+                    column_config={
+                        "来源":       st.column_config.TextColumn(width="small"),
+                        "距离(km)":   st.column_config.TextColumn(width="small"),
+                        "成交租金(元)": st.column_config.NumberColumn(format="¥%d"),
+                        "租金边界(元)": st.column_config.NumberColumn(format="¥%d"),
+                        "相似/差异":  st.column_config.TextColumn(width="large"),
+                    },
                 )
                 st.caption("⚠️早期 = 2025年上半年及以前过会，早期建站未严格管控租金，成交租金不具参考性，仅边界可参考")
 
