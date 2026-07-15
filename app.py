@@ -350,25 +350,23 @@ def _kw_at_end(name_m: str, keywords: list) -> bool:
 
 
 def find_nearby_transit(coord: str):
-    """2km内城轨/地铁/高铁/城际站。返回 (展示用文本, 完整数量)——
-    完整数量与train_rent_model.py的count_transit同口径，用于回归模型特征，
-    不受展示截断（只显示前3个）影响。"""
-    keywords = "地铁站|城轨站|高铁站|城际站|轻轨站|火车站"
-    NAME_MUST_CONTAIN = ["地铁", "城轨", "高铁", "城际", "轻轨", "火车站"]
-    EXCLUDE = ["出口", "停车", "公交", "换乘中心"]
+    """2km内地铁/城轨/高铁/城际/轻轨/火车站。返回 (展示用文本, 完整数量)——
+    完整数量与build_station_features.py的count_transit同口径，用于回归模型特征，
+    不受展示截断（只显示前3个）影响。
+    ⚠️ 用高德官方typecode过滤（150200火车站+150500地铁站），不用名称关键词判断：
+    实测名称判断法有两个反向bug——①真站点名称格式为"民治(地铁站)"，"地铁站"三字
+    在括号里，会被_name_main()去掉后导致名称检测失效、真站点被漏掉；②"雅好花园酒店
+    深圳龙华地铁站店"这类商户名称本身就含"地铁站"三字，会被误判为真地铁站纳入统计。
+    typecode是高德官方分类，不受商户自报名称影响，一次性解决两个问题。"""
     try:
         r = requests.get(
             "https://restapi.amap.com/v3/place/around",
-            params={"location": coord, "keywords": keywords, "radius": 2000,
-                    "sortrule": "distance", "offset": 10, "page": 1,
+            params={"location": coord, "types": "150200|150500", "radius": 2000,
+                    "sortrule": "distance", "offset": 20, "page": 1,
                     "key": AMAP_KEY, "output": "json"},
             timeout=10,
         ).json()
-        pois = r.get("pois") or []
-        pois = [p for p in pois
-                if any(kw in _name_main(str(p.get("name", ""))) for kw in NAME_MUST_CONTAIN)
-                and "-" not in _name_main(str(p.get("name", "")))
-                and not any(kw in str(p.get("name", "")) for kw in EXCLUDE)]
+        pois = [p for p in (r.get("pois") or []) if str(p.get("typecode", "")) in ("150200", "150500")]
         if not pois:
             return "", 0
         lines = [f"{p.get('name', '').strip()}（{p.get('distance', '')}m）" for p in pois[:3]]
@@ -1413,6 +1411,8 @@ if st.session_state.eval_result:
             _details_srv = ""
             _first_dist_re = re.compile(r"（(\d+)m")
             for _lbl, _text in _pois.items():
+                if _lbl == "🚉 交通枢纽":
+                    continue  # 交通枢纽已合并进下方"交通与充电枢纽"面板，此处不重复展示
                 _items = _poi_items(_text)
                 # 最近距离（明细第一条括号里的距离）
                 _near = ""
@@ -1495,17 +1495,29 @@ Promise.allSettled(CATS.map(c => loadCat(c[0], c[1], c[2]))).catch(() => {{}});
             components.html(_strip_html, height=300, scrolling=True)
             st.caption("📡 周边设施统计：2km范围 · 前三类服务器端检索并传给AI，后五类浏览器端实时检索（仅展示参考，不参与区域类型判断——住宅类POI常混入宿舍公寓）")
 
-        # ── 交通与充电枢纽（仿领导工具面板：充电站+固定半径搜索的高速/高铁/汽车站/机场，纯展示）──
+        # ── 交通与充电枢纽（合并面板：2km地铁/高铁/城轨明细 + 充电站 + 固定半径补充搜索，仿领导工具）──
         _th = st.session_state.get("eval_transit_hubs") or {}
         if _th:
             with st.container(border=True):
                 st.markdown("##### 🚉 交通与充电枢纽")
                 _chg_count, _chg_nearest = _th.get("charging", (0, None))
+                _transit_items = _poi_items(_pois.get("🚉 交通枢纽", ""))
+                _transit_near = ""
+                if _transit_items:
+                    _dm = _first_dist_re.search(_transit_items[0])
+                    _transit_near = f"最近 {_dm.group(1)}m" if _dm else ""
                 _c1, _c2 = st.columns(2)
-                _c1.metric("⚡ 充电站（2km）", f"{_chg_count} 个",
+                _c1.metric("🚇 地铁/高铁/城轨（2km，进AI评估）", f"{_th.get('transit_count', 0)} 个",
+                           _transit_near or "范围内无")
+                _c2.metric("⚡ 充电站（2km）", f"{_chg_count} 个",
                            f"最近 {_chg_nearest}m" if _chg_nearest else "范围内无")
-                _c2.metric("🚉 地铁/高铁/城轨（2km，进AI评估）", f"{_th.get('transit_count', 0)} 个")
-                st.caption("交通枢纽（固定半径搜索）")
+                if _transit_items:
+                    st.markdown(
+                        f"<div style='font-size:0.85rem;color:#5c6b85;padding:2px 2px 10px'>"
+                        f"{'、'.join(_transit_items)}</div>",
+                        unsafe_allow_html=True,
+                    )
+                st.caption("以下为固定半径补充搜索（仅供参考，不进AI评估）")
                 for _label, _radius, _count, _nearest in _th.get("hubs", []):
                     _rk = int(_radius / 1000)
                     _detail = f"最近 {_nearest}m" if _nearest else "范围内无"
