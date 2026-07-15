@@ -1815,7 +1815,8 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
 
         with _tab_bench:
             # 对标案例对比（表格+柱状图，数据来自benchmarks匹配，非LLM文本）
-            if benches:
+            _supp_for_tab = st.session_state.get("eval_supplement") or []
+            if benches or _supp_for_tab:
                 with st.container(border=True):
                     st.markdown("##### 📊 对标案例对比")
 
@@ -1909,6 +1910,12 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
                         },
                     )
                     st.caption("⚠️早期 = 2025年上半年及以前过会，早期建站未严格管控租金，成交租金不具参考性，仅边界可参考")
+            else:
+                st.info(
+                    "该区域历史签约站点稀少，未匹配到近距离对标案例。\n\n"
+                    "价格建议已由统计模型基于行政区基准+周边POI特征给出（见上方价格卡与「这个价格是怎么算出来的」），"
+                    "但缺少实际成交案例佐证，建议参考左侧「低置信度」提示做人工审核。"
+                )
 
         with _tab_report:
             st.subheader("📋 评估报告详情")
