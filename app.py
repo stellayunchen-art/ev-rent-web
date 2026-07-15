@@ -262,10 +262,21 @@ def assess_confidence(city, district, transit_count, industrial_count, mall_coun
     return level, flags_low + flags_mid, advice
 
 
+def _current_audit_num() -> float:
+    """今天对应的连续时间数值（年+月/12），必须与 train_rent_model.py 的
+    current_audit_num() 算法完全一致，否则预测值和训练时的时间基准对不上。"""
+    from datetime import date
+    today = date.today()
+    return today.year + (today.month - 1) / 12
+
+
 def predict_target_rent(city: str, district: str, transit_count: int, industrial_count: int, mall_count: int):
     """用Ridge回归模型预测目标单车位租金，并按行政区标准范围夹取。
-    模型基于598个历史场地训练（城市+行政区 + 2km内交通枢纽/工业园/商场数量），
-    刻意不含AI视觉分类特征，因此可在调用Coze之前独立完成预测（持出集MAPE 9.99%）。
+    模型基于历史场地训练（城市+行政区 + 2km内交通枢纽/工业园/商场数量 + 内审时间趋势），
+    刻意不含AI视觉分类特征，因此可在调用Coze之前独立完成预测。
+    ⚠️ 预测时代入"当前时点"（audit_num=今天），模型据此从历史时间趋势系数自动
+    折算出当前行情价，效果类似领导工具的"×0.85时间折扣"，但系数由数据回归得出、
+    不是人工拍定，且对任意行政区自适应生效。
     返回 (目标租金, 边界上限, 谈判起点价)，任一环节数据缺失则返回 (None, None, None)。"""
     bundle = load_rent_model()
     std = lookup_rent_standard(city, district)
@@ -279,6 +290,7 @@ def predict_target_rent(city: str, district: str, transit_count: int, industrial
         "transit_count": transit_count,
         "industrial_count": industrial_count,
         "mall_count": mall_count,
+        "audit_num": _current_audit_num(),
     }])
     try:
         pred = bundle["pipeline"].predict(row)[0]
@@ -287,8 +299,10 @@ def predict_target_rent(city: str, district: str, transit_count: int, industrial
         return None, None, None
 
     low, high = std
-    target = max(low, min(high, round(raw_target / 10) * 10))  # 夹取在标准范围内，取整到10元
     boundary = high  # 边界=行政区标准上限（硬性规则，不由模型预测）
+    # 目标价夹取在[标准下限, 边界×95%]——刻意不允许目标=边界，保留谈判空间
+    target_cap = max(low, round(boundary * 0.95 / 10) * 10)
+    target = max(low, min(target_cap, round(raw_target / 10) * 10))
     opening = max(low, round(target * 0.9 / 10) * 10)  # 起点价=目标价的90%，同样不低于标准下限
     return target, boundary, opening
 
@@ -433,6 +447,52 @@ def find_nearby_commercial(coord: str):
     lines = [t for _, t in results[:5]]
     text = "【周边商场/购物中心（高德自动检索，2km内）】\n" + "\n".join(lines)
     return text, len(results)
+
+
+def find_charging_stations(coord: str):
+    """2km内充电站数量+最近距离（高德typecode=011100，展示用，不进模型特征）。"""
+    try:
+        r = requests.get(
+            "https://restapi.amap.com/v3/place/around",
+            params={"location": coord, "types": "011100", "radius": 2000,
+                    "sortrule": "distance", "offset": 1, "page": 1,
+                    "key": AMAP_KEY, "output": "json"},
+            timeout=10,
+        ).json()
+        count = int(r.get("count") or 0)
+        pois = r.get("pois") or []
+        nearest = int(pois[0].get("distance") or 0) if pois else None
+        return count, nearest
+    except Exception:
+        return 0, None
+
+
+def find_transit_hubs_extended(coord: str):
+    """交通枢纽固定半径搜索（仿领导工具"交通与充电枢纽"面板，纯展示，不进模型特征）：
+    高速出入口(3km)/高铁火车站(5km)/长途汽车站(3km)/机场(15km)，每类返回(数量, 最近距离)。"""
+    specs = [
+        ("🛣️ 高速出入口", "高速公路出入口", 3000),
+        ("🚄 高铁/火车站", "火车站|高铁站", 5000),
+        ("🚌 长途汽车站", "长途汽车站|客运站", 3000),
+        ("✈️ 机场", "机场", 15000),
+    ]
+    results = []
+    for label, kw, radius in specs:
+        try:
+            r = requests.get(
+                "https://restapi.amap.com/v3/place/around",
+                params={"location": coord, "keywords": kw, "radius": radius,
+                        "sortrule": "distance", "offset": 1, "page": 1,
+                        "key": AMAP_KEY, "output": "json"},
+                timeout=10,
+            ).json()
+            count = int(r.get("count") or 0)
+            pois = r.get("pois") or []
+            nearest = int(pois[0].get("distance") or 0) if pois else None
+        except Exception:
+            count, nearest = 0, None
+        results.append((label, radius, count, nearest))
+    return results
 
 
 def find_nearby_roads(coord: str):
@@ -920,8 +980,8 @@ with st.sidebar:
     st.markdown("### ⚡ 站点信息输入")
     with st.form("eval_form"):
         f_name = st.text_input(
-            "站点名称 *",
-            placeholder="例：广州天河正佳换电站",
+            "站点名称（选填）",
+            placeholder="不填则用地址自动生成，例：广州天河正佳换电站",
         )
         f_addr = st.text_area(
             "完整地址 *",
@@ -946,9 +1006,12 @@ if "eval_result" not in st.session_state:
 
 # ── 评估流程 ──────────────────────────────────
 if submitted:
-    if not all([f_name, f_addr]):
-        st.error("请填写站点名称和完整地址")
+    if not f_addr:
+        st.error("请填写完整地址")
         st.stop()
+    if not f_name:
+        # 未填站点名称时，用地址最后一段自动生成一个可读名称
+        f_name = re.split(r"[，,]", f_addr.strip())[-1].strip()[:20] or "未命名站点"
     if not COZE_TOKEN:
         st.error("请先在 Secrets 中配置 COZE_TOKEN")
         st.stop()
@@ -1056,6 +1119,10 @@ if submitted:
         # Step 2.75：周边路网（regeo最近道路，展示用）
         township, nearby_roads = find_nearby_roads(coord)
 
+        # Step 2.77：充电站 + 交通枢纽固定半径搜索（仿领导工具"交通与充电枢纽"面板，纯展示）
+        charging_count, charging_nearest = find_charging_stations(coord)
+        transit_hubs = find_transit_hubs_extended(coord)
+
         # Step 2.8：置信度评估（确定性规则：训练样本覆盖 + POI密度 + 对标距离）
         conf_level, conf_reasons, conf_advice = assess_confidence(
             city, district, transit_count, industrial_count, mall_count, benches
@@ -1099,6 +1166,11 @@ if submitted:
     st.session_state.eval_model   = {"target": model_target, "boundary": model_boundary, "opening": model_opening}
     st.session_state.eval_confidence = {"level": conf_level, "reasons": conf_reasons, "advice": conf_advice}
     st.session_state.eval_roads = {"township": township, "roads": nearby_roads}
+    st.session_state.eval_transit_hubs = {
+        "charging": (charging_count, charging_nearest),
+        "hubs": transit_hubs,
+        "transit_count": transit_count,
+    }
 
 # ── 双视图展示（从 session_state 读取，刷新不丢失）────
 if st.session_state.eval_result:
@@ -1269,11 +1341,19 @@ if st.session_state.eval_result:
                     # 右侧定位分析：小标签 → 大结论 → 松弛依据，段落间大留白
                     _loc_html = []
 
+                    # 每类标签配一个专属强调色，一眼区分（左侧色块+彩色标签文字）
+                    _LABEL_COLORS = {
+                        "商圈类型": "#3b6fd1",   # 蓝
+                        "道路条件": "#d98c22",   # 橙
+                        "地段价值": "#2b9e6f",   # 绿
+                    }
+
                     def _sec_open(label, value, value_size="1.15rem", value_bold=True):
                         w = "700" if value_bold else "400"
+                        c = _LABEL_COLORS.get(label, "#9aa7bd")
                         return (
-                            f"<div style='margin-bottom:20px'>"
-                            f"<div style='font-size:0.78rem;color:#9aa7bd;letter-spacing:2px;margin-bottom:3px'>{label}</div>"
+                            f"<div style='margin-bottom:20px;padding-left:11px;border-left:3px solid {c}'>"
+                            f"<div style='font-size:0.78rem;color:{c};letter-spacing:2px;font-weight:700;margin-bottom:3px'>{label}</div>"
                             f"<div style='font-size:{value_size};font-weight:{w};color:#1a2b4a;line-height:1.75'>{value}</div>"
                         )
 
@@ -1319,8 +1399,9 @@ if st.session_state.eval_result:
                             for n, d, dist in _roads
                         )
                         _loc_html.append(
-                            f"<div style='padding-top:14px;border-top:1px dashed #dbe4f3'>"
-                            f"<div style='font-size:0.78rem;color:#9aa7bd;letter-spacing:2px;margin-bottom:8px'>周边路网</div>"
+                            f"<div style='padding-top:14px;border-top:1px dashed #dbe4f3;"
+                            f"padding-left:11px;border-left:3px solid #8b5cf6'>"
+                            f"<div style='font-size:0.78rem;color:#8b5cf6;letter-spacing:2px;font-weight:700;margin-bottom:8px'>周边路网</div>"
                             f"{_pills}</div>"
                         )
                     if _loc_html:
@@ -1413,6 +1494,29 @@ Promise.allSettled(CATS.map(c => loadCat(c[0], c[1], c[2]))).catch(() => {{}});
             import streamlit.components.v1 as components
             components.html(_strip_html, height=300, scrolling=True)
             st.caption("📡 周边设施统计：2km范围 · 前三类服务器端检索并传给AI，后五类浏览器端实时检索（仅展示参考，不参与区域类型判断——住宅类POI常混入宿舍公寓）")
+
+        # ── 交通与充电枢纽（仿领导工具面板：充电站+固定半径搜索的高速/高铁/汽车站/机场，纯展示）──
+        _th = st.session_state.get("eval_transit_hubs") or {}
+        if _th:
+            with st.container(border=True):
+                st.markdown("##### 🚉 交通与充电枢纽")
+                _chg_count, _chg_nearest = _th.get("charging", (0, None))
+                _c1, _c2 = st.columns(2)
+                _c1.metric("⚡ 充电站（2km）", f"{_chg_count} 个",
+                           f"最近 {_chg_nearest}m" if _chg_nearest else "范围内无")
+                _c2.metric("🚉 地铁/高铁/城轨（2km，进AI评估）", f"{_th.get('transit_count', 0)} 个")
+                st.caption("交通枢纽（固定半径搜索）")
+                for _label, _radius, _count, _nearest in _th.get("hubs", []):
+                    _rk = int(_radius / 1000)
+                    _detail = f"最近 {_nearest}m" if _nearest else "范围内无"
+                    st.markdown(
+                        f"<div style='display:flex;justify-content:space-between;padding:5px 2px;"
+                        f"border-bottom:1px solid #f0f3f8;font-size:0.9rem'>"
+                        f"<span style='color:#44536f'>{_label}（{_rk}km内）</span>"
+                        f"<span><b style='color:#1a2b4a'>{_count} 个</b>"
+                        f"<span style='color:#9aa7bd;margin-left:10px'>{_detail}</span></span></div>",
+                        unsafe_allow_html=True,
+                    )
 
         # 对标案例对比（表格+柱状图，数据来自benchmarks匹配，非LLM文本）
         if benches:
