@@ -19,70 +19,95 @@ st.set_page_config(
 )
 
 # ── 全局样式 ──────────────────────────────────
+# 设计方向（2026-07-15）：克制留白风格——去渐变、去重阴影，改用细边框(1px hairline)+
+# 大留白+单一强调色，参考的是"少即是多"的现代SaaS工具（Linear/Notion一类），而不是
+# 常见的"企业蓝渐变卡片"套路。全站统一走 --app-* 这套变量，不再零散写十六进制色值。
 st.markdown("""
 <style>
+:root {
+    --app-bg: #ffffff;
+    --app-surface: #fafbfc;
+    --app-border: #e6e8ec;
+    --app-border-strong: #d5d9e0;
+    --app-text: #16181d;
+    --app-text-secondary: #6b7280;
+    --app-text-muted: #9aa0ab;
+    --app-accent: #1f3a5f;
+    --app-accent-soft: #eef2f7;
+    --app-radius: 10px;
+}
 /* 宽屏但限制最大宽度，避免超宽显示器上内容被拉得过散 */
-.block-container { max-width: 1400px; padding-top: 2rem; }
-/* 主标题横幅（浅色卡片+图标徽章+流程胶囊） */
+.block-container { max-width: 1320px; padding-top: 2rem; }
+html, body, [class*="css"] {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+}
+/* 主标题横幅：白底细边框，不用渐变/阴影 */
 .hero-banner {
-    background: linear-gradient(180deg, #ffffff 0%, #f4f8fe 100%);
-    border: 1px solid #e3eaf6;
-    border-radius: 16px;
-    padding: 22px 26px;
+    background: var(--app-bg);
+    border: 1px solid var(--app-border);
+    border-radius: 14px;
+    padding: 20px 26px;
     margin-bottom: 6px;
-    box-shadow: 0 2px 10px rgba(26,43,74,0.06);
     display: flex;
     align-items: center;
-    gap: 18px;
+    gap: 16px;
 }
 .hero-icon {
-    width: 58px; height: 58px; flex-shrink: 0;
-    background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-    border-radius: 15px;
+    width: 46px; height: 46px; flex-shrink: 0;
+    background: var(--app-accent-soft);
+    border-radius: 12px;
     display: flex; align-items: center; justify-content: center;
-    font-size: 30px;
-    box-shadow: 0 4px 12px rgba(30,60,114,0.35);
+    font-size: 22px;
 }
 .hero-banner h1 {
     margin: 0;
-    font-size: 1.6rem;
-    font-weight: 800;
-    color: #1a2b4a;
-    letter-spacing: 1px;
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--app-text);
+    letter-spacing: 0.3px;
 }
 .hero-steps {
-    margin-top: 9px;
-    display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+    margin-top: 8px;
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
 }
 .hero-steps span.step {
-    background: #eef3fb;
-    color: #44536f;
+    border: 1px solid var(--app-border);
+    color: var(--app-text-secondary);
     border-radius: 999px;
-    padding: 3px 12px;
-    font-size: 0.78rem;
+    padding: 2px 11px;
+    font-size: 0.76rem;
 }
-.hero-steps span.arrow { color: #b0bdd4; font-size: 0.8rem; }
-/* 指标卡片 */
+.hero-steps span.arrow { color: var(--app-text-muted); font-size: 0.8rem; }
+/* 指标卡片：去渐变，细边框 */
 div[data-testid="stMetric"] {
-    background: linear-gradient(180deg, #f8faff 0%, #eef3fb 100%);
-    border: 1px solid #dbe4f3;
-    border-radius: 12px;
-    padding: 14px 16px;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: var(--app-radius);
+    padding: 12px 16px;
 }
-div[data-testid="stMetric"] label { color: #5b6b8c; }
+div[data-testid="stMetric"] label { color: var(--app-text-secondary); }
 /* 报告分节卡片内的标题行 */
 .section-title {
     font-size: 1.02rem;
-    font-weight: 700;
+    font-weight: 600;
     margin-bottom: 2px;
+    color: var(--app-text);
 }
 /* 表格圆角 */
-div[data-testid="stTable"] table { border-radius: 10px; overflow: hidden; }
-/* 按钮圆角 */
-.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button { border-radius: 10px; }
-/* 板块间距：带边框容器之间留出明显空隙 */
-div[data-testid="stVerticalBlockBorderWrapper"] { margin-bottom: 18px; }
-div[data-testid="stVerticalBlockBorderWrapper"] > div { padding: 6px 4px; }
+div[data-testid="stTable"] table { border-radius: var(--app-radius); overflow: hidden; }
+/* 按钮：细边框风格，去圆润阴影 */
+.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
+    border-radius: var(--app-radius);
+    border: 1px solid var(--app-border-strong);
+    box-shadow: none;
+}
+/* 带边框容器（st.container(border=True)）：统一细边框，不叠加阴影 */
+div[data-testid="stVerticalBlockBorderWrapper"] {
+    margin-bottom: 16px;
+    border-color: var(--app-border) !important;
+    box-shadow: none !important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"] > div { padding: 4px 2px; }
 /* iframe组件与下方内容留距 */
 iframe { margin-bottom: 4px; }
 </style>
@@ -190,6 +215,7 @@ def lookup_rent_standard(city: str, district: str):
 
 
 @st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner=False)
 def load_rent_model():
     """加载训练好的Ridge回归模型（joblib格式，含pipeline+use_log标记）。加载失败返回None。"""
     if not RENT_MODEL_PATH.exists():
@@ -199,6 +225,18 @@ def load_rent_model():
         return joblib.load(RENT_MODEL_PATH)
     except Exception:
         return None
+
+
+def model_stats_note() -> str:
+    """模型样本数+MAPE的展示文案，从joblib bundle动态读取（而不是写死数字），
+    这样每次重训模型后不用满屋子改字符串，数字自动跟着rent_model.joblib走。"""
+    bundle = load_rent_model()
+    if not bundle:
+        return "统计模型不可用"
+    n = bundle.get("n_samples", "—")
+    mape = bundle.get("mape_holdout")
+    mape_str = f"{mape:.2f}%" if isinstance(mape, (int, float)) else "—"
+    return f"{n}个历史场地训练 · MAPE {mape_str}"
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -994,7 +1032,7 @@ with st.sidebar:
             help="高德定位不准时手动填入。从钉图易点击站点位置获取坐标，格式：经度,纬度（中英文逗号均可）。填入后将覆盖高德自动定位。",
         )
         submitted = st.form_submit_button("🚀 开始评估", width="stretch", type="primary")
-    st.caption(f"📊 统计模型：598个历史场地 · MAPE 9.99%")
+    st.caption(f"📊 统计模型：{model_stats_note()}")
 
 # ── Session State 初始化 ──────────────────────
 if "eval_result" not in st.session_state:
@@ -1102,11 +1140,11 @@ if submitted:
             for d_km, row in supplement:
                 st.write(f"  · {row['name']}（同类型补充） — {round(d_km, 2)} km")
 
-        # Step 2.7：Ridge回归模型预测目标租金（598个历史场地训练，MAPE 9.99%）
+        # Step 2.7：Ridge回归模型预测目标租金
         # 在调用Coze之前完成，边界=行政区标准硬上限，目标=模型预测夹取在标准范围内，
         # 起点价=目标的90%——三个数字全部由Python确定性算出，作为既定事实传给Coze，
         # LLM不再自行判断该用哪个案例当锚点、该不该打折，只负责写支撑这些数字的说明文字。
-        st.write("📈 正在用统计模型预测目标租金（598个历史场地训练）…")
+        st.write(f"📈 正在用统计模型预测目标租金（{model_stats_note()}）…")
         model_target, model_boundary, model_opening = predict_target_rent(
             city, district, transit_count, industrial_count, mall_count
         )
@@ -1137,8 +1175,7 @@ if submitted:
         if model_target:
             benchmark_info += (
                 f"\n\n【系统统计模型预测（最高优先级，覆盖以下所有对标案例的数字推断）】\n"
-                f"基于598个历史场地训练的Ridge回归模型（城市/行政区+2km内交通枢纽/工业园/商场数量特征，"
-                f"持出测试集MAPE 9.99%）预测：\n"
+                f"基于{model_stats_note()}的Ridge回归模型（城市/行政区+2km内交通枢纽/工业园/商场数量特征）预测：\n"
                 f"建议单车位租金边界：{model_boundary}元/车位/月（=本行政区标准上限，硬性规则）\n"
                 f"建议目标单车位租金：{model_target:.0f}元/车位/月（模型预测值，已夹取在行政区标准范围内）\n"
                 f"谈判起点价：{model_opening:.0f}元/车位/月（目标价的90%）\n"
@@ -1192,10 +1229,10 @@ if st.session_state.eval_result:
         st.markdown(
             f"""
 <div style="display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;margin:2px 0 2px">
-  <span style="font-size:1.25rem;font-weight:800;color:#1a2b4a">📍 {f_name or '—'}</span>
-  <span style="font-size:1rem;font-weight:700;color:#44536f">{city} · {district}{('·' + _township) if _township else ''}</span>
+  <span style="font-size:1.2rem;font-weight:600;color:var(--app-text)">📍 {f_name or '—'}</span>
+  <span style="font-size:1rem;font-weight:500;color:var(--app-text-secondary)">{city} · {district}{('·' + _township) if _township else ''}</span>
 </div>
-<div style="color:#8a97ad;font-size:0.85rem;margin-bottom:12px">
+<div style="color:var(--app-text-muted);font-size:0.85rem;margin-bottom:12px">
   高德识别地址：{f_addr}　|　坐标：{coord}
 </div>
 """,
@@ -1224,30 +1261,29 @@ if st.session_state.eval_result:
             _t = _target if _target else "—"
             _o = _opening if _opening else "—"
             _b = _boundary if _boundary else "—"
-            _src_note = ("统计模型计算 · 598个历史场地 · MAPE 9.99%"
+            _src_note = (f"统计模型计算 · {model_stats_note()}"
                          if _model_nums.get("target") else "AI评估提取")
             st.markdown(
                 f"""
-<div style="background:linear-gradient(135deg,#1e3c72 0%,#2a5298 100%);
-     border-radius:16px;padding:26px 24px 16px;text-align:center;
-     color:#ffffff;margin-bottom:10px">
-  <div style="font-size:0.95rem;color:rgba(255,255,255,0.85);margin-bottom:14px">综合建议租金（首年价，元/车位/月）</div>
+<div style="background:var(--app-bg);border:1px solid var(--app-border);
+     border-radius:14px;padding:24px 24px 14px;text-align:center;margin-bottom:10px">
+  <div style="font-size:0.9rem;color:var(--app-text-secondary);margin-bottom:16px">综合建议租金（首年价，元/车位/月）</div>
   <div style="display:flex;justify-content:center;align-items:flex-end;gap:56px">
     <div>
-      <div style="font-size:0.85rem;color:rgba(255,255,255,0.75)">🤝 谈判起点</div>
-      <div style="font-size:1.9rem;font-weight:700;line-height:1.3">¥{_o}</div>
+      <div style="font-size:0.82rem;color:var(--app-text-muted)">🤝 谈判起点</div>
+      <div style="font-size:1.7rem;font-weight:600;line-height:1.3;color:var(--app-text)">¥{_o}</div>
     </div>
     <div>
-      <div style="font-size:0.95rem;color:#ffd43b;font-weight:600">🎯 建议目标</div>
-      <div style="font-size:3rem;font-weight:800;line-height:1.15;letter-spacing:1px">¥{_t}</div>
+      <div style="font-size:0.85rem;color:var(--app-accent);font-weight:600">🎯 建议目标</div>
+      <div style="font-size:2.7rem;font-weight:700;line-height:1.15;letter-spacing:0.3px;color:var(--app-accent)">¥{_t}</div>
     </div>
     <div>
-      <div style="font-size:0.85rem;color:rgba(255,255,255,0.75)">💰 边界上限</div>
-      <div style="font-size:1.9rem;font-weight:700;line-height:1.3">¥{_b}</div>
+      <div style="font-size:0.82rem;color:var(--app-text-muted)">💰 边界上限</div>
+      <div style="font-size:1.7rem;font-weight:600;line-height:1.3;color:var(--app-text)">¥{_b}</div>
     </div>
   </div>
-  <div style="margin-top:16px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.22);
-       font-size:0.82rem;color:rgba(255,255,255,0.65)">
+  <div style="margin-top:16px;padding-top:10px;border-top:1px solid var(--app-border);
+       font-size:0.8rem;color:var(--app-text-muted)">
     🏛️ 行政区租金标准 {_range_str} 元/车位/月　·　📈 {_src_note}
   </div>
 </div>
@@ -1258,10 +1294,11 @@ if st.session_state.eval_result:
             _conf = st.session_state.get("eval_confidence") or {}
             _lv = _conf.get("level")
             if _lv:
-                _badge_color = {"高": "#12833b;background:#d9f2e3", "中": "#946200;background:#fdf0d5", "低": "#c92a2a;background:#ffe3e3"}[_lv]
+                _badge_color = {"高": "#1c7a4a", "中": "#946200", "低": "#c1372f"}[_lv]
                 st.markdown(
                     f"<div style='text-align:center;margin:4px 0 8px'><span style='color:{_badge_color};"
-                    f"padding:4px 16px;border-radius:999px;font-size:0.88rem;font-weight:700'>"
+                    f"border:1px solid {_badge_color}33;padding:3px 15px;border-radius:999px;"
+                    f"font-size:0.85rem;font-weight:600'>"
                     f"{'✅' if _lv=='高' else '⚠️'} {_lv}置信度</span></div>",
                     unsafe_allow_html=True,
                 )
@@ -1269,9 +1306,9 @@ if st.session_state.eval_result:
                     _reason_html = "".join(f"<div>• {r}</div>" for r in _conf.get("reasons", []))
                     _advice_html = "".join(f"<div>• {a}</div>" for a in _conf.get("advice", []))
                     st.markdown(
-                        f"<div style='background:#fff5f5;border-left:4px solid #fa5252;border-radius:8px;"
-                        f"padding:14px 18px;margin-bottom:10px;font-size:0.9rem;color:#495057;line-height:1.9'>"
-                        f"<div style='color:#c92a2a;font-weight:700;margin-bottom:6px'>⚠️ 低置信度 — 建议人工审核</div>"
+                        f"<div style='background:var(--app-surface);border-left:2px solid #c1372f;border-radius:8px;"
+                        f"padding:14px 18px;margin-bottom:10px;font-size:0.9rem;color:var(--app-text-secondary);line-height:1.9'>"
+                        f"<div style='color:#c1372f;font-weight:600;margin-bottom:6px'>⚠️ 低置信度 — 建议人工审核</div>"
                         f"{_reason_html}"
                         f"<div style='font-weight:700;margin-top:8px'>人工审核建议：</div>{_advice_html}</div>",
                         unsafe_allow_html=True,
@@ -1280,7 +1317,7 @@ if st.session_state.eval_result:
                     st.caption("⚠️ " + "；".join(_conf["reasons"]) + "。" + "；".join(_conf.get("advice", [])))
 
             if _model_nums.get("target"):
-                st.caption("📈 以上边界/目标/起点价由统计模型计算（598个历史场地训练，持出测试集MAPE 9.99%），下方为AI针对此数字的定性说明")
+                st.caption(f"📈 以上边界/目标/起点价由统计模型计算（{model_stats_note()}），下方为AI针对此数字的定性说明")
             else:
                 # 模型不可用时的旧路径：边界锚点+推理依据从AI报告文字提取
                 _anchor = re.search(r"边界锚点[：:]\s*([^\n。；]+)", result)
@@ -1327,9 +1364,9 @@ if st.session_state.eval_result:
                     _right = f"{_rd_first}，{_rd_val}" if _rd_first else _rd_val
                     _feat = " · ".join(x for x in (_left, _right) if x)
                     st.markdown(
-                        f"<div style='background:#e8f1fd;border:1px solid #c9defb;border-radius:10px;"
-                        f"padding:9px 16px;color:#1857b8;font-size:0.95rem;font-weight:600;"
-                        f"margin-bottom:12px'>🟢 {_feat}</div>",
+                        f"<div style='background:var(--app-accent-soft);border:1px solid var(--app-border);border-radius:10px;"
+                        f"padding:9px 16px;color:var(--app-accent);font-size:0.95rem;font-weight:600;"
+                        f"margin-bottom:12px'>{_feat}</div>",
                         unsafe_allow_html=True,
                     )
                 # 左图右文布局（仿领导版）：左侧地图标签页，右侧AI定位分析
@@ -1353,7 +1390,7 @@ if st.session_state.eval_result:
                         return (
                             f"<div style='margin-bottom:20px;padding-left:11px;border-left:3px solid {c}'>"
                             f"<div style='font-size:0.78rem;color:{c};letter-spacing:2px;font-weight:700;margin-bottom:3px'>{label}</div>"
-                            f"<div style='font-size:{value_size};font-weight:{w};color:#1a2b4a;line-height:1.75'>{value}</div>"
+                            f"<div style='font-size:{value_size};font-weight:{w};color:var(--app-text);line-height:1.75'>{value}</div>"
                         )
 
                     _blocks = []   # 每个元素是一段完整HTML
@@ -1383,7 +1420,7 @@ if st.session_state.eval_result:
                         ))
                         if _b["reason"]:
                             _loc_html.append(
-                                f"<div style='margin-top:7px;color:#8a97ad;font-size:0.85rem;line-height:1.9'>{_b['reason']}</div>"
+                                f"<div style='margin-top:7px;color:var(--app-text-muted);font-size:0.85rem;line-height:1.9'>{_b['reason']}</div>"
                             )
                         _loc_html.append("</div>")
 
@@ -1392,9 +1429,9 @@ if st.session_state.eval_result:
                     if _roads:
                         _pills = "".join(
                             f"<span style='background:#f2f6fd;border:1px solid #e3eaf6;border-radius:999px;"
-                            f"padding:4px 13px;font-size:0.82rem;color:#44536f;display:inline-block;"
+                            f"padding:4px 13px;font-size:0.82rem;color:var(--app-text-secondary);display:inline-block;"
                             f"margin:0 8px 8px 0;white-space:nowrap'>"
-                            f"<b style='color:#1a2b4a'>{n}</b>　{d}侧 · 约{dist:.0f}m</span>"
+                            f"<b style='color:var(--app-text)'>{n}</b>　{d}侧 · 约{dist:.0f}m</span>"
                             for n, d, dist in _roads
                         )
                         _loc_html.append(
@@ -1421,23 +1458,23 @@ if st.session_state.eval_result:
                     _dm = _first_dist_re.search(_items[0])
                     _near = f"最近 {_dm.group(1)}m" if _dm else ""
                 _chips_srv += (
-                    f"<div style='background:#ffffff;border:1px solid #e6ecf5;border-radius:12px;"
-                    f"padding:12px 8px 10px;text-align:center;box-shadow:0 1px 4px rgba(26,43,74,0.05)'>"
-                    f"<div style='color:#8a97ad;font-size:12px;letter-spacing:1px'>{_lbl}</div>"
-                    f"<div style='font-size:1.65rem;font-weight:800;color:#1e3c72;line-height:1.4'>{len(_items)}"
-                    f"<span style='font-size:0.8rem;font-weight:400;color:#9aa7bd'> 个</span></div>"
-                    f"<div style='color:#9aa7bd;font-size:11px'>{_near or '&nbsp;'}</div></div>"
+                    f"<div style='background:#ffffff;border:1px solid #e6e8ec;border-radius:10px;"
+                    f"padding:12px 8px 10px;text-align:center'>"
+                    f"<div style='color:#6b7280;font-size:12px;letter-spacing:1px'>{_lbl}</div>"
+                    f"<div style='font-size:1.5rem;font-weight:600;color:#1f3a5f;line-height:1.4'>{len(_items)}"
+                    f"<span style='font-size:0.8rem;font-weight:400;color:#9aa0ab'> 个</span></div>"
+                    f"<div style='color:#9aa0ab;font-size:11px'>{_near or '&nbsp;'}</div></div>"
                 )
                 _details_srv += f"<b>{_lbl}</b>：{'、'.join(_items) if _items else '2km内未检索到'}<br>"
             # 浏览器端补充统计的类别（仿领导工具的"环境构成"，但仅做展示参考，不参与区域类型判断）
             _browser_cats_html = ""
             for _i, (_emoji_lbl,) in enumerate([("🏘️ 住宅小区",), ("🏢 写字楼",), ("🏫 中小学",), ("🏥 医院",), ("🌳 公园广场",)]):
                 _browser_cats_html += (
-                    f"<div style='background:#ffffff;border:1px solid #e6ecf5;border-radius:12px;"
-                    f"padding:12px 8px 10px;text-align:center;box-shadow:0 1px 4px rgba(26,43,74,0.05)'>"
-                    f"<div style='color:#8a97ad;font-size:12px;letter-spacing:1px'>{_emoji_lbl}</div>"
-                    f"<div id='cnt{_i}' style='font-size:1.65rem;font-weight:800;color:#1e3c72;line-height:1.4'>…</div>"
-                    f"<div id='near{_i}' style='color:#9aa7bd;font-size:11px'>&nbsp;</div></div>"
+                    f"<div style='background:#ffffff;border:1px solid #e6e8ec;border-radius:10px;"
+                    f"padding:12px 8px 10px;text-align:center'>"
+                    f"<div style='color:#6b7280;font-size:12px;letter-spacing:1px'>{_emoji_lbl}</div>"
+                    f"<div id='cnt{_i}' style='font-size:1.5rem;font-weight:600;color:#1f3a5f;line-height:1.4'>…</div>"
+                    f"<div id='near{_i}' style='color:#9aa0ab;font-size:11px'>&nbsp;</div></div>"
                 )
             _strip_html = f"""
 <div style="font-family:-apple-system,'PingFang SC','Source Sans Pro',sans-serif">
@@ -1525,8 +1562,8 @@ Promise.allSettled(CATS.map(c => loadCat(c[0], c[1], c[2]))).catch(() => {{}});
                     st.markdown(
                         f"<div style='display:flex;justify-content:space-between;padding:5px 2px;"
                         f"border-bottom:1px solid #f0f3f8;font-size:0.9rem'>"
-                        f"<span style='color:#44536f'>{_label}（{_rk}km内）</span>"
-                        f"<span><b style='color:#1a2b4a'>{_count} 个</b>"
+                        f"<span style='color:var(--app-text-secondary)'>{_label}（{_rk}km内）</span>"
+                        f"<span><b style='color:var(--app-text)'>{_count} 个</b>"
                         f"<span style='color:#9aa7bd;margin-left:10px'>{_detail}</span></span></div>",
                         unsafe_allow_html=True,
                     )
