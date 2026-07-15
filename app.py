@@ -356,6 +356,70 @@ def predict_target_rent(city: str, district: str, transit_count: int, industrial
     return target, boundary, opening
 
 
+def explain_prediction(city: str, district: str, transit_count: int, industrial_count: int, mall_count: int):
+    """把Ridge回归模型的预测拆解成"行政区基准 × 各特征调整系数"的可读分项，
+    回答"这个数字是怎么算出来的"，而不是只吐一个黑箱数字。
+    数学原理：log(rent) = intercept + Σ(特征值 × 系数)，两边取exp后拆成连乘：
+    rent = exp(intercept) × Π exp(特征贡献)，每一项exp(贡献)就是该特征对最终价格的乘数因子，
+    可以直接读成"+12%"这种人话。返回None表示模型不可用或预测失败。"""
+    bundle = load_rent_model()
+    if bundle is None or not bundle.get("use_log"):
+        return None  # 线性目标模型的贡献是可加的元，不是乘数，暂不支持拆解（当前部署模型固定用log目标）
+    try:
+        pipe = bundle["pipeline"]
+        pre = pipe.named_steps["pre"]
+        ridge = pipe.named_steps["ridge"]
+        city_clean = str(city).replace("市", "").strip()
+        row = pd.DataFrame([{
+            "city_district": f"{city_clean}-{district}",
+            "transit_count": transit_count,
+            "industrial_count": industrial_count,
+            "mall_count": mall_count,
+            "audit_num": _current_audit_num(),
+        }])
+        X_trans = pre.transform(row)
+        if hasattr(X_trans, "toarray"):
+            X_trans = X_trans.toarray()
+        contributions = X_trans[0] * ridge.coef_
+        feature_names = pre.get_feature_names_out()
+    except Exception:
+        return None
+
+    LABELS = [
+        ("cat__city_district_", lambda: f"📍 {district}行政区基准"),
+        ("num__transit_count", lambda: f"🚇 交通枢纽（{transit_count}个）"),
+        ("num__industrial_count", lambda: f"🏭 工业园（{industrial_count}个）"),
+        ("num__mall_count", lambda: f"🏬 商业设施（{mall_count}个）"),
+        ("num__audit_num", lambda: "📅 内审时间趋势"),
+    ]
+    baseline = float(np.exp(ridge.intercept_))
+    parts = []
+    for name, contrib in zip(feature_names, contributions):
+        if abs(contrib) < 1e-6:
+            continue
+        label = next((make() for prefix, make in LABELS if name.startswith(prefix)), name)
+        parts.append({"label": label, "factor": float(np.exp(contrib)), "pct": float((np.exp(contrib) - 1) * 100)})
+    return {"baseline": baseline, "parts": parts}
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def load_district_rent_history(city: str, district: str) -> pd.DataFrame:
+    """该行政区历史成交价随时间的数据点（内审日期+单车位租金），用于趋势图。
+    数据来自station_features.csv（和训练模型同一份数据），不是另起炉灶查数据库。"""
+    if not FEATURES_CSV.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(FEATURES_CSV, encoding="utf-8-sig")
+    city_clean = str(city).replace("市", "").strip()
+    df = df[
+        (df["city"].astype(str).str.replace("市", "", regex=False).str.strip() == city_clean)
+        & (df["district"].astype(str).str.strip() == str(district).strip())
+    ]
+    df = df.dropna(subset=["audit_date", "unit_rent"]).copy()
+    df["audit_date"] = pd.to_datetime(df["audit_date"], errors="coerce")
+    df = df.dropna(subset=["audit_date"])
+    return df[["audit_date", "unit_rent", "name"]].sort_values("audit_date")
+
+
 def geocode(address: str):
     """
     输入完整地址，返回 (coord, city, district)。
@@ -744,6 +808,51 @@ def render_static_maps(coord: str):
     st.caption("📍 红色标记为站点位置 · 切换标签查看不同范围（评估AI使用的是另一套精确图幅地图，不受此处显示影响）")
 
 
+def render_rent_trend_chart(city: str, district: str):
+    """该行政区历史成交价随内审时间变化的散点+趋势线，让"统计模型判断的时间趋势"
+    可视化给人看，而不是只在算法内部生效。领导工具的×0.85折扣是人工拍的固定系数，
+    看不出数据支撑；这张图直接把576条训练数据里这个行政区的真实走势画出来。"""
+    hist = load_district_rent_history(city, district)
+    if len(hist) < 3:
+        st.caption(f"📉 {district}历史样本不足3个，暂不显示趋势图")
+        return
+    import altair as alt
+    base = alt.Chart(hist).encode(
+        x=alt.X("audit_date:T", title="内审日期"),
+        y=alt.Y("unit_rent:Q", title="单车位租金（元/月）", scale=alt.Scale(zero=False)),
+    )
+    points = base.mark_circle(size=70, opacity=0.6, color="#1f3a5f").encode(
+        tooltip=[alt.Tooltip("name:N", title="站点"), alt.Tooltip("audit_date:T", title="内审日期"), alt.Tooltip("unit_rent:Q", title="租金")]
+    )
+    trend = base.transform_regression("audit_date", "unit_rent", method="linear").mark_line(color="#c1372f", strokeWidth=2)
+    st.altair_chart((points + trend).properties(height=200), width="stretch")
+    st.caption(f"📉 {district}历史{len(hist)}个场地成交价，红线为时间趋势拟合——模型预测时会参考这条趋势自动折算当前行情价")
+
+
+def render_price_explainability(explain: dict):
+    """把统计模型预测拆解成"行政区基准 × 各特征调整系数"的分项列表，
+    回答"这个数字是怎么算出来的"，而不是只吐一个数字让人凭空相信。"""
+    if not explain or not explain.get("parts"):
+        return
+    rows_html = (
+        f"<div style='display:flex;justify-content:space-between;padding:6px 2px;"
+        f"border-bottom:1px solid var(--app-border);font-size:0.88rem'>"
+        f"<span style='color:var(--app-text-secondary)'>行政区基准价（该行政区历史均值水平）</span>"
+        f"<span style='color:var(--app-text);font-weight:600'>¥{explain['baseline']:.0f}</span></div>"
+    )
+    for p in explain["parts"]:
+        arrow = "↑" if p["pct"] >= 0 else "↓"
+        sign = "+" if p["pct"] >= 0 else ""
+        rows_html += (
+            f"<div style='display:flex;justify-content:space-between;padding:6px 2px;"
+            f"border-bottom:1px solid var(--app-border);font-size:0.88rem'>"
+            f"<span style='color:var(--app-text-secondary)'>{p['label']}</span>"
+            f"<span style='color:var(--app-text)'>{arrow} {sign}{p['pct']:.1f}%</span></div>"
+        )
+    st.markdown(rows_html, unsafe_allow_html=True)
+    st.caption("以上为模型系数拆解（未经边界夹取前的原始预测过程），最终目标价见上方价格卡（已按行政区标准夹取留出谈判空间）")
+
+
 def format_report(result: str) -> str:
     """把报告文本格式化为适合 st.markdown 的形式（分节分隔线+强制换行）。"""
     SECTION_EMOJIS = ("📍", "📚", "💡", "💰", "🤝", "🔥")
@@ -998,6 +1107,41 @@ def extract_key_numbers(result: str):
     return target_rent, opening_price
 
 
+def run_batch_prediction(name: str, address: str) -> dict:
+    """批量评估单行：geocode+POI+统计模型三价，不调用Coze（视觉分析+LLM报告太慢，
+    批量场景要的是快速拿到一批数字做初筛，不是逐个出完整报告）。
+    返回一行结果字典，任一环节失败时对应字段留空，不中断整批。"""
+    row = {"站点名称": name or "—", "地址": address, "城市": "", "行政区": "",
+           "谈判起点": None, "建议目标": None, "边界上限": None, "置信度": "", "备注": ""}
+    if not address:
+        row["备注"] = "地址为空，已跳过"
+        return row
+    coord, city, district = geocode(address)
+    if not coord:
+        row["备注"] = "定位失败"
+        return row
+    row["城市"], row["行政区"] = city, district
+    if not row["站点名称"] or row["站点名称"] == "—":
+        row["站点名称"] = re.split(r"[，,]", address.strip())[-1].strip()[:20] or "未命名站点"
+
+    _, transit_count = find_nearby_transit(coord)
+    _, industrial_count = find_nearby_industrial(coord)
+    _, mall_count = find_nearby_commercial(coord)
+    target, boundary, opening = predict_target_rent(city, district, transit_count, industrial_count, mall_count)
+    if target is None:
+        row["备注"] = "该行政区无租金标准数据，模型无法预测"
+        return row
+
+    df = load_benchmarks()
+    benches = find_benchmarks(coord, city, row["站点名称"], df)
+    conf_level, conf_reasons, _ = assess_confidence(city, district, transit_count, industrial_count, mall_count, benches)
+    row.update({
+        "谈判起点": opening, "建议目标": round(target), "边界上限": boundary,
+        "置信度": conf_level, "备注": "；".join(conf_reasons) if conf_level == "低" else "",
+    })
+    return row
+
+
 # ═══════════════════════════════════════════════
 #  页面主体
 # ═══════════════════════════════════════════════
@@ -1025,24 +1169,42 @@ if not COZE_TOKEN:
 
 # ── 输入表单（侧边栏：左侧输入、右侧展示，减少上下滚动）──
 with st.sidebar:
-    st.markdown("### ⚡ 站点信息输入")
-    with st.form("eval_form"):
-        f_name = st.text_input(
-            "站点名称（选填）",
-            placeholder="不填则用地址自动生成，例：广州天河正佳换电站",
-        )
-        f_addr = st.text_area(
-            "完整地址 *",
-            placeholder="例：广东省广州市天河区天河路385号正佳广场旁",
-            help="请包含省市区信息，系统将自动解析城市和行政区，无需单独填写",
-            height=80,
-        )
-        f_coord = st.text_input(
-            "坐标（选填）",
-            placeholder="例：113.935068,22.677748",
-            help="高德定位不准时手动填入。从钉图易点击站点位置获取坐标，格式：经度,纬度（中英文逗号均可）。填入后将覆盖高德自动定位。",
-        )
-        submitted = st.form_submit_button("🚀 开始评估", width="stretch", type="primary")
+    eval_mode = st.radio("评估模式", ["单站评估", "批量评估"], horizontal=True, label_visibility="collapsed")
+    submitted = False
+    batch_submitted = False
+    f_name = f_addr = f_coord = ""
+    batch_text = ""
+
+    if eval_mode == "单站评估":
+        st.markdown("### ⚡ 站点信息输入")
+        with st.form("eval_form"):
+            f_name = st.text_input(
+                "站点名称（选填）",
+                placeholder="不填则用地址自动生成，例：广州天河正佳换电站",
+            )
+            f_addr = st.text_area(
+                "完整地址 *",
+                placeholder="例：广东省广州市天河区天河路385号正佳广场旁",
+                help="请包含省市区信息，系统将自动解析城市和行政区，无需单独填写",
+                height=80,
+            )
+            f_coord = st.text_input(
+                "坐标（选填）",
+                placeholder="例：113.935068,22.677748",
+                help="高德定位不准时手动填入。从钉图易点击站点位置获取坐标，格式：经度,纬度（中英文逗号均可）。填入后将覆盖高德自动定位。",
+            )
+            submitted = st.form_submit_button("🚀 开始评估", width="stretch", type="primary")
+    else:
+        st.markdown("### 📦 批量站点输入")
+        with st.form("batch_form"):
+            batch_text = st.text_area(
+                "每行一个站点，格式：站点名称,完整地址（名称可留空）",
+                placeholder="龙华民治站,广东省深圳市龙华区民治大道88号\n,广东省广州市天河区天河路385号正佳广场旁",
+                height=220,
+                help="快速拿到一批候选点的目标价/边界/起点价，仅跑统计模型，不生成AI报告和地图分析（速度快很多）",
+            )
+            batch_submitted = st.form_submit_button("🚀 开始批量评估", width="stretch", type="primary")
+        st.caption("批量模式跳过Coze视觉分析和AI报告，只输出统计模型算的三个价格，适合快速初筛多个候选点")
     st.caption(f"📊 统计模型：{model_stats_note()}")
 
 # ── Session State 初始化 ──────────────────────
@@ -1051,6 +1213,24 @@ if "eval_result" not in st.session_state:
     st.session_state.eval_meta   = {}     # 站点名/地址/坐标/城市/行政区
     st.session_state.eval_benches = []    # 对标站点列表
     st.session_state.eval_supplement = [] # 全市同类型补充案例
+if "batch_results" not in st.session_state:
+    st.session_state.batch_results = None
+
+# ── 批量评估流程（跑统计模型三价，不调用Coze）──
+if batch_submitted:
+    _lines = [l.strip() for l in batch_text.splitlines() if l.strip()]
+    if not _lines:
+        st.error("请至少粘贴一行站点信息")
+        st.stop()
+    _rows = []
+    _progress = st.progress(0.0, text="批量评估中…")
+    for _i, _line in enumerate(_lines, 1):
+        _parts = _line.split(",", 1) if "," in _line else ["", _line]
+        _bname, _baddr = _parts[0].strip(), _parts[-1].strip()
+        _rows.append(run_batch_prediction(_bname, _baddr))
+        _progress.progress(_i / len(_lines), text=f"批量评估中…（{_i}/{len(_lines)}）")
+    _progress.empty()
+    st.session_state.batch_results = _rows
 
 # ── 评估流程 ──────────────────────────────────
 if submitted:
@@ -1210,7 +1390,10 @@ if submitted:
     st.session_state.eval_benches = benches
     st.session_state.eval_supplement = supplement
     st.session_state.eval_pois    = {"🚉 交通枢纽": nearby_tr, "🏭 工业园/产业园": nearby_ind, "🏬 大型商业设施": nearby}
-    st.session_state.eval_model   = {"target": model_target, "boundary": model_boundary, "opening": model_opening}
+    st.session_state.eval_model   = {
+        "target": model_target, "boundary": model_boundary, "opening": model_opening,
+        "transit_count": transit_count, "industrial_count": industrial_count, "mall_count": mall_count,
+    }
     st.session_state.eval_confidence = {"level": conf_level, "reasons": conf_reasons, "advice": conf_advice}
     st.session_state.eval_roads = {"township": township, "roads": nearby_roads}
     st.session_state.eval_transit_hubs = {
@@ -1219,8 +1402,29 @@ if submitted:
         "transit_count": transit_count,
     }
 
+# ── 批量评估结果展示 ──────────────────────────
+if eval_mode == "批量评估" and st.session_state.batch_results:
+    st.divider()
+    _bdf = pd.DataFrame(st.session_state.batch_results)
+    st.markdown(f"##### 📦 批量评估结果（{len(_bdf)}个站点）")
+    st.dataframe(
+        _bdf, hide_index=True, width="stretch",
+        column_config={
+            "谈判起点": st.column_config.NumberColumn(format="¥%d"),
+            "建议目标": st.column_config.NumberColumn(format="¥%d"),
+            "边界上限": st.column_config.NumberColumn(format="¥%d"),
+        },
+    )
+    st.download_button(
+        "💾 下载结果（.csv）",
+        data=_bdf.to_csv(index=False).encode("utf-8-sig"),
+        file_name="批量租金评估结果.csv",
+        mime="text/csv",
+    )
+    st.caption("以上仅为统计模型算的三个价格，未经AI视觉分析和报告生成；如需完整报告请切换到「单站评估」逐个跑")
+
 # ── 双视图展示（从 session_state 读取，刷新不丢失）────
-if st.session_state.eval_result:
+if eval_mode == "单站评估" and st.session_state.eval_result:
     result   = st.session_state.eval_result
     _meta    = st.session_state.eval_meta
     f_name   = _meta.get("name", "")
@@ -1346,6 +1550,24 @@ if st.session_state.eval_result:
             if _tr:
                 st.caption(f"🎯 目标价推理依据：{_tr.group(1).strip()}")
 
+            # 这个价格是怎么算出来的：趋势图+模型系数拆解，默认折叠（不打断决策区的简洁），
+            # 但比黑箱吐一个数字更能让人信服——领导工具的×0.85折扣看不出这层依据
+            if _model_nums.get("target"):
+                with st.expander("📈 这个价格是怎么算出来的"):
+                    _ec1, _ec2 = st.columns([1.1, 1], gap="medium")
+                    with _ec1:
+                        st.markdown("**行政区历史租金趋势**")
+                        render_rent_trend_chart(city, district)
+                    with _ec2:
+                        st.markdown("**模型系数拆解**")
+                        _explain = explain_prediction(
+                            city, district,
+                            _model_nums.get("transit_count", 0),
+                            _model_nums.get("industrial_count", 0),
+                            _model_nums.get("mall_count", 0),
+                        )
+                        render_price_explainability(_explain)
+
         # ── 站点周边：静态地图 + 站点定位描述（上图下文）──
         _pois = st.session_state.get("eval_pois") or {}
 
@@ -1459,300 +1681,307 @@ if st.session_state.eval_result:
                     if _loc_html:
                         st.markdown("".join(_loc_html), unsafe_allow_html=True)
 
-        # ── 周边设施统计（紧凑横向条：3类服务器端 + 住宅小区浏览器端）──
-        if any(_pois.values()) or coord:
-            _chips_srv = ""
-            _details_srv = ""
-            _first_dist_re = re.compile(r"（(\d+)m")
-            for _lbl, _text in _pois.items():
-                if _lbl == "🚉 交通枢纽":
-                    continue  # 交通枢纽已合并进下方"交通与充电枢纽"面板，此处不重复展示
-                _items = _poi_items(_text)
-                # 最近距离（明细第一条括号里的距离）
-                _near = ""
-                if _items:
-                    _dm = _first_dist_re.search(_items[0])
-                    _near = f"最近 {_dm.group(1)}m" if _dm else ""
-                _chips_srv += (
-                    f"<div style='background:#ffffff;border:1px solid #e6e8ec;border-radius:10px;"
-                    f"padding:12px 8px 10px;text-align:center'>"
-                    f"<div style='color:#6b7280;font-size:12px;letter-spacing:1px'>{_lbl}</div>"
-                    f"<div style='font-size:1.5rem;font-weight:600;color:#1f3a5f;line-height:1.4'>{len(_items)}"
-                    f"<span style='font-size:0.8rem;font-weight:400;color:#9aa0ab'> 个</span></div>"
-                    f"<div style='color:#9aa0ab;font-size:11px'>{_near or '&nbsp;'}</div></div>"
-                )
-                _details_srv += f"<b>{_lbl}</b>：{'、'.join(_items) if _items else '2km内未检索到'}<br>"
-            # 浏览器端补充统计的类别（仿领导工具的"环境构成"，但仅做展示参考，不参与区域类型判断）
-            _browser_cats_html = ""
-            for _i, (_emoji_lbl,) in enumerate([("🏘️ 住宅小区",), ("🏢 写字楼",), ("🏫 中小学",), ("🏥 医院",), ("🌳 公园广场",)]):
-                _browser_cats_html += (
-                    f"<div style='background:#ffffff;border:1px solid #e6e8ec;border-radius:10px;"
-                    f"padding:12px 8px 10px;text-align:center'>"
-                    f"<div style='color:#6b7280;font-size:12px;letter-spacing:1px'>{_emoji_lbl}</div>"
-                    f"<div id='cnt{_i}' style='font-size:1.5rem;font-weight:600;color:#1f3a5f;line-height:1.4'>…</div>"
-                    f"<div id='near{_i}' style='color:#9aa0ab;font-size:11px'>&nbsp;</div></div>"
-                )
-            _strip_html = f"""
-<div style="font-family:-apple-system,'PingFang SC','Source Sans Pro',sans-serif">
-  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
-    {_chips_srv}
-    {_browser_cats_html}
-  </div>
-  <div style="margin-top:10px;font-size:12.5px;color:#808495;line-height:1.9;
-       max-height:130px;overflow-y:auto;background:#fafbfe;border:1px solid #eef2f9;
-       border-radius:8px;padding:8px 12px">
-    {_details_srv}<span id="resdetail"><b>🏘️ 住宅小区</b>：检索中…</span>
-  </div>
-</div>
-<script>
-const KEY = "{AMAP_KEY}";
-const coord = "{coord}";
-// 浏览器端统计类别（国内网络直连高德，绕过海外服务器限制）
-// count字段=2km内总数；nearest取距离排序第一条
-const CATS = [
-  ["120302", 0, true],            // 住宅小区（额外拉明细清单）
-  ["120201", 1, false],           // 写字楼
-  ["141202|141203", 2, false],    // 中小学
-  ["090100", 3, false],           // 综合医院
-  ["110101|110105", 4, false],    // 公园广场
-];
-async function loadCat(types, idx, wantDetail) {{
-  const r = await fetch("https://restapi.amap.com/v3/place/around?location=" + coord +
-    "&types=" + encodeURIComponent(types) + "&radius=2000&offset=25&page=1" +
-    "&sortrule=distance&output=json&key=" + KEY);
-  const j = await r.json();
-  const total = parseInt(j.count || "0");
-  const pois = j.pois || [];
-  document.getElementById("cnt" + idx).innerHTML = total +
-    "<span style='font-size:0.8rem;font-weight:400;color:#9aa7bd'> 个</span>";
-  if (pois.length) {{
-    document.getElementById("near" + idx).innerHTML = "最近 " + pois[0].distance + "m";
-  }} else {{
-    document.getElementById("near" + idx).innerHTML = "范围内无";
-  }}
-  if (wantDetail) {{
-    const seen = new Set();
-    const items = pois.filter(p => {{
-      if (seen.has(p.name)) return false;
-      seen.add(p.name); return true;
-    }});
-    document.getElementById("resdetail").innerHTML = "<b>🏘️ 住宅小区</b>：" +
-      (items.length ? items.slice(0, 25).map(p => p.name + "（" + p.distance + "m）").join("、") +
-        (total > items.length ? " …等共" + total + "个" : "") : "2km内未检索到") +
-      "<span style='color:#b0bdd4'>（注：可能含公寓/宿舍，仅供参考，不作为区域类型判断依据）</span>";
-  }}
-}}
-Promise.allSettled(CATS.map(c => loadCat(c[0], c[1], c[2]))).catch(() => {{}});
-</script>
-"""
-            import streamlit.components.v1 as components
-            with st.container(border=True):
-                st.markdown("##### 📡 周边设施统计")
-                components.html(_strip_html, height=300, scrolling=True)
-                st.caption("2km范围 · 前三类服务器端检索并传给AI，后五类浏览器端实时检索（仅展示参考，不参与区域类型判断——住宅类POI常混入宿舍公寓）")
 
-        # ── 交通与充电枢纽（合并面板：2km地铁/高铁/城轨明细 + 充电站 + 固定半径补充搜索，仿领导工具）──
-        _th = st.session_state.get("eval_transit_hubs") or {}
-        if _th:
-            with st.container(border=True):
-                st.markdown("##### 🚉 交通与充电枢纽")
-                _chg_count, _chg_nearest = _th.get("charging", (0, None))
-                _transit_items = _poi_items(_pois.get("🚉 交通枢纽", ""))
-                _transit_near = ""
-                if _transit_items:
-                    _dm = _first_dist_re.search(_transit_items[0])
-                    _transit_near = f"最近 {_dm.group(1)}m" if _dm else ""
-                _c1, _c2 = st.columns(2)
-                _c1.metric("🚇 地铁/高铁/城轨（2km，进AI评估）", f"{_th.get('transit_count', 0)} 个",
-                           _transit_near or "范围内无")
-                _c2.metric("⚡ 充电站（2km）", f"{_chg_count} 个",
-                           f"最近 {_chg_nearest}m" if _chg_nearest else "范围内无")
-                if _transit_items:
-                    st.markdown(
-                        f"<div style='font-size:0.85rem;color:#5c6b85;padding:2px 2px 10px'>"
-                        f"{'、'.join(_transit_items)}</div>",
-                        unsafe_allow_html=True,
+        # ── 证据与明细（三个tab折叠展示，避免5-6张卡片一路堆到底）──
+        st.markdown("##### 📎 证据与明细")
+        _tab_facility, _tab_bench, _tab_report = st.tabs(["📡 周边设施", "📊 对标案例", "📋 AI评估报告"])
+        with _tab_facility:
+            # ── 周边设施统计（紧凑横向条：3类服务器端 + 住宅小区浏览器端）──
+            if any(_pois.values()) or coord:
+                _chips_srv = ""
+                _details_srv = ""
+                _first_dist_re = re.compile(r"（(\d+)m")
+                for _lbl, _text in _pois.items():
+                    if _lbl == "🚉 交通枢纽":
+                        continue  # 交通枢纽已合并进下方"交通与充电枢纽"面板，此处不重复展示
+                    _items = _poi_items(_text)
+                    # 最近距离（明细第一条括号里的距离）
+                    _near = ""
+                    if _items:
+                        _dm = _first_dist_re.search(_items[0])
+                        _near = f"最近 {_dm.group(1)}m" if _dm else ""
+                    _chips_srv += (
+                        f"<div style='background:#ffffff;border:1px solid #e6e8ec;border-radius:10px;"
+                        f"padding:12px 8px 10px;text-align:center'>"
+                        f"<div style='color:#6b7280;font-size:12px;letter-spacing:1px'>{_lbl}</div>"
+                        f"<div style='font-size:1.5rem;font-weight:600;color:#1f3a5f;line-height:1.4'>{len(_items)}"
+                        f"<span style='font-size:0.8rem;font-weight:400;color:#9aa0ab'> 个</span></div>"
+                        f"<div style='color:#9aa0ab;font-size:11px'>{_near or '&nbsp;'}</div></div>"
                     )
-                st.caption("以下为固定半径补充搜索（仅供参考，不进AI评估）")
-                for _label, _radius, _count, _nearest in _th.get("hubs", []):
-                    _rk = int(_radius / 1000)
-                    _detail = f"最近 {_nearest}m" if _nearest else "范围内无"
-                    st.markdown(
-                        f"<div style='display:flex;justify-content:space-between;padding:5px 2px;"
-                        f"border-bottom:1px solid #f0f3f8;font-size:0.9rem'>"
-                        f"<span style='color:var(--app-text-secondary)'>{_label}（{_rk}km内）</span>"
-                        f"<span><b style='color:var(--app-text)'>{_count} 个</b>"
-                        f"<span style='color:#9aa7bd;margin-left:10px'>{_detail}</span></span></div>",
-                        unsafe_allow_html=True,
+                    _details_srv += f"<b>{_lbl}</b>：{'、'.join(_items) if _items else '2km内未检索到'}<br>"
+                # 浏览器端补充统计的类别（仿领导工具的"环境构成"，但仅做展示参考，不参与区域类型判断）
+                _browser_cats_html = ""
+                for _i, (_emoji_lbl,) in enumerate([("🏘️ 住宅小区",), ("🏢 写字楼",), ("🏫 中小学",), ("🏥 医院",), ("🌳 公园广场",)]):
+                    _browser_cats_html += (
+                        f"<div style='background:#ffffff;border:1px solid #e6e8ec;border-radius:10px;"
+                        f"padding:12px 8px 10px;text-align:center'>"
+                        f"<div style='color:#6b7280;font-size:12px;letter-spacing:1px'>{_emoji_lbl}</div>"
+                        f"<div id='cnt{_i}' style='font-size:1.5rem;font-weight:600;color:#1f3a5f;line-height:1.4'>…</div>"
+                        f"<div id='near{_i}' style='color:#9aa0ab;font-size:11px'>&nbsp;</div></div>"
                     )
+                _strip_html = f"""
+    <div style="font-family:-apple-system,'PingFang SC','Source Sans Pro',sans-serif">
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+        {_chips_srv}
+        {_browser_cats_html}
+      </div>
+      <div style="margin-top:10px;font-size:12.5px;color:#808495;line-height:1.9;
+           max-height:130px;overflow-y:auto;background:#fafbfe;border:1px solid #eef2f9;
+           border-radius:8px;padding:8px 12px">
+        {_details_srv}<span id="resdetail"><b>🏘️ 住宅小区</b>：检索中…</span>
+      </div>
+    </div>
+    <script>
+    const KEY = "{AMAP_KEY}";
+    const coord = "{coord}";
+    // 浏览器端统计类别（国内网络直连高德，绕过海外服务器限制）
+    // count字段=2km内总数；nearest取距离排序第一条
+    const CATS = [
+      ["120302", 0, true],            // 住宅小区（额外拉明细清单）
+      ["120201", 1, false],           // 写字楼
+      ["141202|141203", 2, false],    // 中小学
+      ["090100", 3, false],           // 综合医院
+      ["110101|110105", 4, false],    // 公园广场
+    ];
+    async function loadCat(types, idx, wantDetail) {{
+      const r = await fetch("https://restapi.amap.com/v3/place/around?location=" + coord +
+        "&types=" + encodeURIComponent(types) + "&radius=2000&offset=25&page=1" +
+        "&sortrule=distance&output=json&key=" + KEY);
+      const j = await r.json();
+      const total = parseInt(j.count || "0");
+      const pois = j.pois || [];
+      document.getElementById("cnt" + idx).innerHTML = total +
+        "<span style='font-size:0.8rem;font-weight:400;color:#9aa7bd'> 个</span>";
+      if (pois.length) {{
+        document.getElementById("near" + idx).innerHTML = "最近 " + pois[0].distance + "m";
+      }} else {{
+        document.getElementById("near" + idx).innerHTML = "范围内无";
+      }}
+      if (wantDetail) {{
+        const seen = new Set();
+        const items = pois.filter(p => {{
+          if (seen.has(p.name)) return false;
+          seen.add(p.name); return true;
+        }});
+        document.getElementById("resdetail").innerHTML = "<b>🏘️ 住宅小区</b>：" +
+          (items.length ? items.slice(0, 25).map(p => p.name + "（" + p.distance + "m）").join("、") +
+            (total > items.length ? " …等共" + total + "个" : "") : "2km内未检索到") +
+          "<span style='color:#b0bdd4'>（注：可能含公寓/宿舍，仅供参考，不作为区域类型判断依据）</span>";
+      }}
+    }}
+    Promise.allSettled(CATS.map(c => loadCat(c[0], c[1], c[2]))).catch(() => {{}});
+    </script>
+    """
+                import streamlit.components.v1 as components
+                with st.container(border=True):
+                    st.markdown("##### 📡 周边设施统计")
+                    components.html(_strip_html, height=300, scrolling=True)
+                    st.caption("2km范围 · 前三类服务器端检索并传给AI，后五类浏览器端实时检索（仅展示参考，不参与区域类型判断——住宅类POI常混入宿舍公寓）")
 
-        # 对标案例对比（表格+柱状图，数据来自benchmarks匹配，非LLM文本）
-        if benches:
-            with st.container(border=True):
-                st.markdown("##### 📊 对标案例对比")
+            # ── 交通与充电枢纽（合并面板：2km地铁/高铁/城轨明细 + 充电站 + 固定半径补充搜索，仿领导工具）──
+            _th = st.session_state.get("eval_transit_hubs") or {}
+            if _th:
+                with st.container(border=True):
+                    st.markdown("##### 🚉 交通与充电枢纽")
+                    _chg_count, _chg_nearest = _th.get("charging", (0, None))
+                    _transit_items = _poi_items(_pois.get("🚉 交通枢纽", ""))
+                    _transit_near = ""
+                    if _transit_items:
+                        _dm = _first_dist_re.search(_transit_items[0])
+                        _transit_near = f"最近 {_dm.group(1)}m" if _dm else ""
+                    _c1, _c2 = st.columns(2)
+                    _c1.metric("🚇 地铁/高铁/城轨（2km，进AI评估）", f"{_th.get('transit_count', 0)} 个",
+                               _transit_near or "范围内无")
+                    _c2.metric("⚡ 充电站（2km）", f"{_chg_count} 个",
+                               f"最近 {_chg_nearest}m" if _chg_nearest else "范围内无")
+                    if _transit_items:
+                        st.markdown(
+                            f"<div style='font-size:0.85rem;color:#5c6b85;padding:2px 2px 10px'>"
+                            f"{'、'.join(_transit_items)}</div>",
+                            unsafe_allow_html=True,
+                        )
+                    st.caption("以下为固定半径补充搜索（仅供参考，不进AI评估）")
+                    for _label, _radius, _count, _nearest in _th.get("hubs", []):
+                        _rk = int(_radius / 1000)
+                        _detail = f"最近 {_nearest}m" if _nearest else "范围内无"
+                        st.markdown(
+                            f"<div style='display:flex;justify-content:space-between;padding:5px 2px;"
+                            f"border-bottom:1px solid #f0f3f8;font-size:0.9rem'>"
+                            f"<span style='color:var(--app-text-secondary)'>{_label}（{_rk}km内）</span>"
+                            f"<span><b style='color:var(--app-text)'>{_count} 个</b>"
+                            f"<span style='color:#9aa7bd;margin-left:10px'>{_detail}</span></span></div>",
+                            unsafe_allow_html=True,
+                        )
 
-                def _num(v):
-                    try:
-                        return round(float(str(v).replace(",", "")))
-                    except (ValueError, TypeError):
-                        return None
+        with _tab_bench:
+            # 对标案例对比（表格+柱状图，数据来自benchmarks匹配，非LLM文本）
+            if benches:
+                with st.container(border=True):
+                    st.markdown("##### 📊 对标案例对比")
 
-                def _audit_display(v):
-                    """内审日期展示：2025年6月及以前为早期建站，成交租金不具参考性"""
-                    s = str(v or "").strip()[:10]
-                    if not s or s in ("nan", "None"):
-                        return "—"
-                    return f"{s} ⚠️早期" if s <= "2025-06-30" else s
+                    def _num(v):
+                        try:
+                            return round(float(str(v).replace(",", "")))
+                        except (ValueError, TypeError):
+                            return None
 
-                def _parse_similarity_notes(text: str) -> dict:
-                    """从📚参考案例文本中解析每个站点的"相似/差异"说明。"""
-                    notes = {}
-                    lines = get_section_lines(text, "📚")
-                    cur_name = None
-                    for l in lines:
-                        s = l.strip()
-                        if not s:
-                            continue
-                        m = re.match(r"^\d*\.?\s*([^（(]+)[（(]", s)
-                        if m and "相似" not in s and "差异" not in s:
-                            cur_name = m.group(1).strip()
-                        elif s.startswith("相似") and cur_name:
-                            notes[cur_name] = s.split("：", 1)[-1].split(":", 1)[-1].strip()
-                            cur_name = None
-                    return notes
+                    def _audit_display(v):
+                        """内审日期展示：2025年6月及以前为早期建站，成交租金不具参考性"""
+                        s = str(v or "").strip()[:10]
+                        if not s or s in ("nan", "None"):
+                            return "—"
+                        return f"{s} ⚠️早期" if s <= "2025-06-30" else s
 
-                _sim_notes = _parse_similarity_notes(result)
+                    def _parse_similarity_notes(text: str) -> dict:
+                        """从📚参考案例文本中解析每个站点的"相似/差异"说明。"""
+                        notes = {}
+                        lines = get_section_lines(text, "📚")
+                        cur_name = None
+                        for l in lines:
+                            s = l.strip()
+                            if not s:
+                                continue
+                            m = re.match(r"^\d*\.?\s*([^（(]+)[（(]", s)
+                            if m and "相似" not in s and "差异" not in s:
+                                cur_name = m.group(1).strip()
+                            elif s.startswith("相似") and cur_name:
+                                notes[cur_name] = s.split("：", 1)[-1].split(":", 1)[-1].strip()
+                                cur_name = None
+                        return notes
 
-                rows_ = []
-                for d_km, brow in benches:
-                    rows_.append({
-                        "来源": "🎯最近对标",
-                        "站点": brow["name"],
-                        "行政区": str(brow.get("district", "") or "—"),
-                        "距离(km)": round(d_km, 2),
-                        "内审日期": _audit_display(brow.get("audit_date")),
-                        "商圈类型": str(brow.get("bc_type", "") or "—"),
-                        "道路条件": str(brow.get("road_cond", "") or "—"),
-                        "成交租金(元)": _num(brow.get("unit_rent")),
-                        "租金边界(元)": _num(brow.get("bound_rent")),
-                        "相似/差异": _sim_notes.get(brow["name"], "—"),
-                    })
-                # 全市同类型补充案例（工业区/城中村主导，距离较远，仅供归纳参考）
-                for d_km, brow in (st.session_state.get("eval_supplement") or []):
-                    rows_.append({
-                        "来源": "🏭全市补充",
-                        "站点": brow["name"],
-                        "行政区": str(brow.get("district", "") or "—"),
-                        "距离(km)": round(d_km, 2),
-                        "内审日期": _audit_display(brow.get("audit_date")),
-                        "商圈类型": str(brow.get("bc_type", "") or "—"),
-                        "道路条件": str(brow.get("road_cond", "") or "—"),
-                        "成交租金(元)": _num(brow.get("unit_rent")),
-                        "租金边界(元)": _num(brow.get("bound_rent")),
-                        "相似/差异": "（全市同类型补充，AI未逐一分析）",
-                    })
-                # 末行加入本站建议（商圈/道路取AI评估结果），方便与对标直接比较
-                if _target or _boundary:
-                    _bc_m   = re.search(r"商圈类型[：:]\s*([^\n，,。；;（(]+)", result)
-                    _road_m = re.search(r"道路条件[：:]\s*([^\n，,。；;（(]+)", result)
-                    rows_.append({
-                        "来源": "",
-                        "站点": "★ 本站建议",
-                        "行政区": district or "—",
-                        "距离(km)": None,
-                        "内审日期": "—",
-                        "商圈类型": _bc_m.group(1).strip() if _bc_m else "—",
-                        "道路条件": _road_m.group(1).strip() if _road_m else "—",
-                        "成交租金(元)": int(_target) if _target else None,
-                        "租金边界(元)": int(_boundary) if _boundary else None,
-                        "相似/差异": "",
-                    })
-                _df_show = pd.DataFrame(rows_)
-                _df_show["距离(km)"] = _df_show["距离(km)"].apply(lambda v: f"{v:.2f}" if isinstance(v, (int, float)) and v is not None else "—")
-                st.dataframe(
-                    _df_show, hide_index=True, width="stretch",
-                    column_config={
-                        "来源":       st.column_config.TextColumn(width="small"),
-                        "行政区":     st.column_config.TextColumn(width="small"),
-                        "距离(km)":   st.column_config.TextColumn(width="small"),
-                        "成交租金(元)": st.column_config.NumberColumn(format="¥%d"),
-                        "租金边界(元)": st.column_config.NumberColumn(format="¥%d"),
-                        "相似/差异":  st.column_config.TextColumn(width="large"),
-                    },
-                )
-                st.caption("⚠️早期 = 2025年上半年及以前过会，早期建站未严格管控租金，成交租金不具参考性，仅边界可参考")
+                    _sim_notes = _parse_similarity_notes(result)
 
-        st.subheader("📋 评估报告详情")
-        st.caption("站点定位已在上方地图区展示，以下为参考案例与租金建议的完整推理，点击各节展开查看")
-        render_report_sections(result)
-        # 组装完整纯文本：站点信息 + 关键价格 + 对标案例 + AI报告
-        _full_lines = [
-            f"站点：{f_name}",
-            f"地址：{f_addr}",
-            f"坐标：{coord}",
-            f"城市：{city}  行政区：{district}",
-        ]
-        # 按模块拆分报告：💰租金建议提前，其余作为AI评估报告，避免重复
-        _SECTION_E = ("📍", "📚", "💡", "💰", "🤝", "🔥")
-        _secs, _cur = [], []
-        for _line in result.splitlines():
-            _s = _line.lstrip()
-            if any(_s.startswith(_e) for _e in _SECTION_E) and _cur:
+                    rows_ = []
+                    for d_km, brow in benches:
+                        rows_.append({
+                            "来源": "🎯最近对标",
+                            "站点": brow["name"],
+                            "行政区": str(brow.get("district", "") or "—"),
+                            "距离(km)": round(d_km, 2),
+                            "内审日期": _audit_display(brow.get("audit_date")),
+                            "商圈类型": str(brow.get("bc_type", "") or "—"),
+                            "道路条件": str(brow.get("road_cond", "") or "—"),
+                            "成交租金(元)": _num(brow.get("unit_rent")),
+                            "租金边界(元)": _num(brow.get("bound_rent")),
+                            "相似/差异": _sim_notes.get(brow["name"], "—"),
+                        })
+                    # 全市同类型补充案例（工业区/城中村主导，距离较远，仅供归纳参考）
+                    for d_km, brow in (st.session_state.get("eval_supplement") or []):
+                        rows_.append({
+                            "来源": "🏭全市补充",
+                            "站点": brow["name"],
+                            "行政区": str(brow.get("district", "") or "—"),
+                            "距离(km)": round(d_km, 2),
+                            "内审日期": _audit_display(brow.get("audit_date")),
+                            "商圈类型": str(brow.get("bc_type", "") or "—"),
+                            "道路条件": str(brow.get("road_cond", "") or "—"),
+                            "成交租金(元)": _num(brow.get("unit_rent")),
+                            "租金边界(元)": _num(brow.get("bound_rent")),
+                            "相似/差异": "（全市同类型补充，AI未逐一分析）",
+                        })
+                    # 末行加入本站建议（商圈/道路取AI评估结果），方便与对标直接比较
+                    if _target or _boundary:
+                        _bc_m   = re.search(r"商圈类型[：:]\s*([^\n，,。；;（(]+)", result)
+                        _road_m = re.search(r"道路条件[：:]\s*([^\n，,。；;（(]+)", result)
+                        rows_.append({
+                            "来源": "",
+                            "站点": "★ 本站建议",
+                            "行政区": district or "—",
+                            "距离(km)": None,
+                            "内审日期": "—",
+                            "商圈类型": _bc_m.group(1).strip() if _bc_m else "—",
+                            "道路条件": _road_m.group(1).strip() if _road_m else "—",
+                            "成交租金(元)": int(_target) if _target else None,
+                            "租金边界(元)": int(_boundary) if _boundary else None,
+                            "相似/差异": "",
+                        })
+                    _df_show = pd.DataFrame(rows_)
+                    _df_show["距离(km)"] = _df_show["距离(km)"].apply(lambda v: f"{v:.2f}" if isinstance(v, (int, float)) and v is not None else "—")
+                    st.dataframe(
+                        _df_show, hide_index=True, width="stretch",
+                        column_config={
+                            "来源":       st.column_config.TextColumn(width="small"),
+                            "行政区":     st.column_config.TextColumn(width="small"),
+                            "距离(km)":   st.column_config.TextColumn(width="small"),
+                            "成交租金(元)": st.column_config.NumberColumn(format="¥%d"),
+                            "租金边界(元)": st.column_config.NumberColumn(format="¥%d"),
+                            "相似/差异":  st.column_config.TextColumn(width="large"),
+                        },
+                    )
+                    st.caption("⚠️早期 = 2025年上半年及以前过会，早期建站未严格管控租金，成交租金不具参考性，仅边界可参考")
+
+        with _tab_report:
+            st.subheader("📋 评估报告详情")
+            st.caption("站点定位已在上方地图区展示，以下为参考案例与租金建议的完整推理，点击各节展开查看")
+            render_report_sections(result)
+            # 组装完整纯文本：站点信息 + 关键价格 + 对标案例 + AI报告
+            _full_lines = [
+                f"站点：{f_name}",
+                f"地址：{f_addr}",
+                f"坐标：{coord}",
+                f"城市：{city}  行政区：{district}",
+            ]
+            # 按模块拆分报告：💰租金建议提前，其余作为AI评估报告，避免重复
+            _SECTION_E = ("📍", "📚", "💡", "💰", "🤝", "🔥")
+            _secs, _cur = [], []
+            for _line in result.splitlines():
+                _s = _line.lstrip()
+                if any(_s.startswith(_e) for _e in _SECTION_E) and _cur:
+                    _secs.append(_cur)
+                    _cur = []
+                _cur.append(_line)
+            if _cur:
                 _secs.append(_cur)
-                _cur = []
-            _cur.append(_line)
-        if _cur:
-            _secs.append(_cur)
-        _money_sec = next((sec for sec in _secs if sec[0].lstrip().startswith("💰")), None)
-        _rest_txt  = "\n".join("\n".join(sec) for sec in _secs if not sec[0].lstrip().startswith("💰"))
+            _money_sec = next((sec for sec in _secs if sec[0].lstrip().startswith("💰")), None)
+            _rest_txt  = "\n".join("\n".join(sec) for sec in _secs if not sec[0].lstrip().startswith("💰"))
 
-        if _money_sec:
-            _full_lines += ["", "【租金建议】"] + [l for l in _money_sec[1:] if l.strip()]
-        elif any([_boundary, _target, _opening]):
-            _full_lines += ["", "【租金建议】"]
-            _rm = re.search(r"租金标准[^\d]{0,15}(\d+)\s*[-–~至—]\s*(\d+)", result)
-            if _rm:
-                _full_lines.append(f"行政区租金标准：{_rm.group(1)}-{_rm.group(2)}元/车位/月")
-            if _boundary:
-                _full_lines.append(f"建议租金边界：{_boundary}元/车位/月")
-            if _target:
-                _full_lines.append(f"目标租金：{_target}元/车位/月")
-            if _opening:
-                _full_lines.append(f"谈判起点价：{_opening}元/车位/月")
-        if _rest_txt.strip():
-            _full_lines += ["", "【AI评估报告】", _rest_txt]
-        if benches:
-            _full_lines += ["", "【对标案例】"]
-            for _i, (_d, _b) in enumerate(benches, 1):
-                _ad = str(_b.get("audit_date", "") or "").strip()[:10]
-                _early = "（⚠️早期，成交租金不参考）" if _ad and _ad <= "2025-06-30" else ""
-                _full_lines.append(
-                    f"{_i}. {_b['name']}｜距离{_d:.2f}km｜内审{_ad or '—'}{_early}｜"
-                    f"{_b.get('bc_type', '') or '—'}｜{_b.get('road_cond', '') or '—'}｜"
-                    f"成交{_b.get('unit_rent', '') or '—'}元｜边界{_b.get('bound_rent', '') or '—'}元"
-                )
-        _supp = st.session_state.get("eval_supplement") or []
-        if _supp:
-            _full_lines += ["", "【全市同类型补充案例（工业区/城中村主导，仅供归纳参考）】"]
-            for _i, (_d, _b) in enumerate(_supp, 1):
-                _ad = str(_b.get("audit_date", "") or "").strip()[:10]
-                _early = "（⚠️早期，成交租金不参考）" if _ad and _ad <= "2025-06-30" else ""
-                _full_lines.append(
-                    f"{_i}. {_b['name']}｜距离{_d:.2f}km｜内审{_ad or '—'}{_early}｜"
-                    f"{_b.get('bc_type', '') or '—'}｜{_b.get('road_cond', '') or '—'}｜"
-                    f"成交{_b.get('unit_rent', '') or '—'}元｜边界{_b.get('bound_rent', '') or '—'}元"
-                )
-        full_text = "\n".join(_full_lines)
+            if _money_sec:
+                _full_lines += ["", "【租金建议】"] + [l for l in _money_sec[1:] if l.strip()]
+            elif any([_boundary, _target, _opening]):
+                _full_lines += ["", "【租金建议】"]
+                _rm = re.search(r"租金标准[^\d]{0,15}(\d+)\s*[-–~至—]\s*(\d+)", result)
+                if _rm:
+                    _full_lines.append(f"行政区租金标准：{_rm.group(1)}-{_rm.group(2)}元/车位/月")
+                if _boundary:
+                    _full_lines.append(f"建议租金边界：{_boundary}元/车位/月")
+                if _target:
+                    _full_lines.append(f"目标租金：{_target}元/车位/月")
+                if _opening:
+                    _full_lines.append(f"谈判起点价：{_opening}元/车位/月")
+            if _rest_txt.strip():
+                _full_lines += ["", "【AI评估报告】", _rest_txt]
+            if benches:
+                _full_lines += ["", "【对标案例】"]
+                for _i, (_d, _b) in enumerate(benches, 1):
+                    _ad = str(_b.get("audit_date", "") or "").strip()[:10]
+                    _early = "（⚠️早期，成交租金不参考）" if _ad and _ad <= "2025-06-30" else ""
+                    _full_lines.append(
+                        f"{_i}. {_b['name']}｜距离{_d:.2f}km｜内审{_ad or '—'}{_early}｜"
+                        f"{_b.get('bc_type', '') or '—'}｜{_b.get('road_cond', '') or '—'}｜"
+                        f"成交{_b.get('unit_rent', '') or '—'}元｜边界{_b.get('bound_rent', '') or '—'}元"
+                    )
+            _supp = st.session_state.get("eval_supplement") or []
+            if _supp:
+                _full_lines += ["", "【全市同类型补充案例（工业区/城中村主导，仅供归纳参考）】"]
+                for _i, (_d, _b) in enumerate(_supp, 1):
+                    _ad = str(_b.get("audit_date", "") or "").strip()[:10]
+                    _early = "（⚠️早期，成交租金不参考）" if _ad and _ad <= "2025-06-30" else ""
+                    _full_lines.append(
+                        f"{_i}. {_b['name']}｜距离{_d:.2f}km｜内审{_ad or '—'}{_early}｜"
+                        f"{_b.get('bc_type', '') or '—'}｜{_b.get('road_cond', '') or '—'}｜"
+                        f"成交{_b.get('unit_rent', '') or '—'}元｜边界{_b.get('bound_rent', '') or '—'}元"
+                    )
+            full_text = "\n".join(_full_lines)
 
-        with st.expander("📋 一键复制纯文本"):
-            st.code(full_text, language=None)
-        st.download_button(
-            label="💾 下载报告（.txt）",
-            data=full_text,
-            file_name=f"租金评估_{f_name}.txt",
-            mime="text/plain",
-            width="stretch",
-        )
+            with st.expander("📋 一键复制纯文本"):
+                st.code(full_text, language=None)
+            st.download_button(
+                label="💾 下载报告（.txt）",
+                data=full_text,
+                file_name=f"租金评估_{f_name}.txt",
+                mime="text/plain",
+                width="stretch",
+            )
 
     # ── 商务同事 视图 ─────────────────────────
     with tab_biz:
