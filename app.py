@@ -25,6 +25,7 @@ st.set_page_config(
 st.markdown("""
 <style>
 :root {
+    --app-page-bg: #f5f6f8;
     --app-bg: #ffffff;
     --app-surface: #fafbfc;
     --app-border: #e6e8ec;
@@ -34,8 +35,14 @@ st.markdown("""
     --app-text-muted: #9aa0ab;
     --app-accent: #1f3a5f;
     --app-accent-soft: #eef2f7;
+    --app-danger: #c1372f;
+    --app-danger-soft: #fdecea;
     --app-radius: 10px;
 }
+/* 页面本身用极浅灰底，白色卡片才能在上面显出"浮起来"的层次——
+   之前卡片和页面背景同为纯白，只靠1px边框分隔，视觉上显得单薄。 */
+[data-testid="stAppViewContainer"] { background: var(--app-page-bg); }
+section[data-testid="stSidebar"] { background: var(--app-bg); }
 /* 宽屏但限制最大宽度，避免超宽显示器上内容被拉得过散 */
 .block-container { max-width: 1320px; padding-top: 2rem; }
 html, body, [class*="css"] {
@@ -101,13 +108,17 @@ div[data-testid="stTable"] table { border-radius: var(--app-radius); overflow: h
     border: 1px solid var(--app-border-strong);
     box-shadow: none;
 }
-/* 带边框容器（st.container(border=True)）：统一细边框，不叠加阴影 */
+/* 带边框容器（st.container(border=True)）：白底+细边框，在浅灰页面背景上"浮起来" */
 div[data-testid="stVerticalBlockBorderWrapper"] {
     margin-bottom: 16px;
+    background: var(--app-bg) !important;
     border-color: var(--app-border) !important;
+    border-radius: 12px !important;
     box-shadow: none !important;
 }
 div[data-testid="stVerticalBlockBorderWrapper"] > div { padding: 4px 2px; }
+/* dataframe/表格同样给白底，避免和灰页面背景融在一起 */
+div[data-testid="stDataFrame"] { background: var(--app-bg); border-radius: var(--app-radius); overflow: hidden; }
 /* iframe组件与下方内容留距 */
 iframe { margin-bottom: 4px; }
 </style>
@@ -1265,24 +1276,24 @@ if st.session_state.eval_result:
                          if _model_nums.get("target") else "AI评估提取")
             st.markdown(
                 f"""
-<div style="background:var(--app-bg);border:1px solid var(--app-border);
-     border-radius:14px;padding:24px 24px 14px;text-align:center;margin-bottom:10px">
+<div style="background:var(--app-accent-soft);border:1px solid var(--app-border);
+     border-radius:14px;padding:22px 24px 14px;text-align:center;margin-bottom:10px">
   <div style="font-size:0.9rem;color:var(--app-text-secondary);margin-bottom:16px">综合建议租金（首年价，元/车位/月）</div>
-  <div style="display:flex;justify-content:center;align-items:flex-end;gap:56px">
-    <div>
-      <div style="font-size:0.82rem;color:var(--app-text-muted)">🤝 谈判起点</div>
-      <div style="font-size:1.7rem;font-weight:600;line-height:1.3;color:var(--app-text)">¥{_o}</div>
+  <div style="display:flex;justify-content:center;align-items:center;gap:24px">
+    <div style="background:var(--app-bg);border:1px solid var(--app-border);border-radius:12px;padding:12px 22px">
+      <div style="font-size:0.8rem;color:var(--app-text-muted)">🤝 谈判起点</div>
+      <div style="font-size:1.6rem;font-weight:600;line-height:1.3;color:var(--app-text)">¥{_o}</div>
     </div>
-    <div>
-      <div style="font-size:0.85rem;color:var(--app-accent);font-weight:600">🎯 建议目标</div>
-      <div style="font-size:2.7rem;font-weight:700;line-height:1.15;letter-spacing:0.3px;color:var(--app-accent)">¥{_t}</div>
+    <div style="background:var(--app-accent);border-radius:14px;padding:14px 32px">
+      <div style="font-size:0.85rem;color:#c9d8ea;font-weight:600">🎯 建议目标</div>
+      <div style="font-size:2.6rem;font-weight:700;line-height:1.15;letter-spacing:0.3px;color:#ffffff">¥{_t}</div>
     </div>
-    <div>
-      <div style="font-size:0.82rem;color:var(--app-text-muted)">💰 边界上限</div>
-      <div style="font-size:1.7rem;font-weight:600;line-height:1.3;color:var(--app-text)">¥{_b}</div>
+    <div style="background:var(--app-bg);border:1px solid var(--app-border);border-radius:12px;padding:12px 22px">
+      <div style="font-size:0.8rem;color:var(--app-text-muted)">💰 边界上限</div>
+      <div style="font-size:1.6rem;font-weight:600;line-height:1.3;color:var(--app-text)">¥{_b}</div>
     </div>
   </div>
-  <div style="margin-top:16px;padding-top:10px;border-top:1px solid var(--app-border);
+  <div style="margin-top:16px;padding-top:10px;border-top:1px solid var(--app-border-strong);
        font-size:0.8rem;color:var(--app-text-muted)">
     🏛️ 行政区租金标准 {_range_str} 元/车位/月　·　📈 {_src_note}
   </div>
@@ -1294,10 +1305,15 @@ if st.session_state.eval_result:
             _conf = st.session_state.get("eval_confidence") or {}
             _lv = _conf.get("level")
             if _lv:
-                _badge_color = {"高": "#1c7a4a", "中": "#946200", "低": "#c1372f"}[_lv]
+                _badge_tints = {
+                    "高": ("#1c7a4a", "#e6f4ec"),
+                    "中": ("#946200", "#fdf1dc"),
+                    "低": ("#c1372f", "#fbe4e2"),
+                }
+                _badge_color, _badge_bg = _badge_tints[_lv]
                 st.markdown(
                     f"<div style='text-align:center;margin:4px 0 8px'><span style='color:{_badge_color};"
-                    f"border:1px solid {_badge_color}33;padding:3px 15px;border-radius:999px;"
+                    f"background:{_badge_bg};padding:4px 16px;border-radius:999px;"
                     f"font-size:0.85rem;font-weight:600'>"
                     f"{'✅' if _lv=='高' else '⚠️'} {_lv}置信度</span></div>",
                     unsafe_allow_html=True,
@@ -1306,9 +1322,9 @@ if st.session_state.eval_result:
                     _reason_html = "".join(f"<div>• {r}</div>" for r in _conf.get("reasons", []))
                     _advice_html = "".join(f"<div>• {a}</div>" for a in _conf.get("advice", []))
                     st.markdown(
-                        f"<div style='background:var(--app-surface);border-left:2px solid #c1372f;border-radius:8px;"
+                        f"<div style='background:var(--app-danger-soft);border-left:3px solid var(--app-danger);border-radius:8px;"
                         f"padding:14px 18px;margin-bottom:10px;font-size:0.9rem;color:var(--app-text-secondary);line-height:1.9'>"
-                        f"<div style='color:#c1372f;font-weight:600;margin-bottom:6px'>⚠️ 低置信度 — 建议人工审核</div>"
+                        f"<div style='color:var(--app-danger);font-weight:600;margin-bottom:6px'>⚠️ 低置信度 — 建议人工审核</div>"
                         f"{_reason_html}"
                         f"<div style='font-weight:700;margin-top:8px'>人工审核建议：</div>{_advice_html}</div>",
                         unsafe_allow_html=True,
@@ -1530,8 +1546,10 @@ Promise.allSettled(CATS.map(c => loadCat(c[0], c[1], c[2]))).catch(() => {{}});
 </script>
 """
             import streamlit.components.v1 as components
-            components.html(_strip_html, height=300, scrolling=True)
-            st.caption("📡 周边设施统计：2km范围 · 前三类服务器端检索并传给AI，后五类浏览器端实时检索（仅展示参考，不参与区域类型判断——住宅类POI常混入宿舍公寓）")
+            with st.container(border=True):
+                st.markdown("##### 📡 周边设施统计")
+                components.html(_strip_html, height=300, scrolling=True)
+                st.caption("2km范围 · 前三类服务器端检索并传给AI，后五类浏览器端实时检索（仅展示参考，不参与区域类型判断——住宅类POI常混入宿舍公寓）")
 
         # ── 交通与充电枢纽（合并面板：2km地铁/高铁/城轨明细 + 充电站 + 固定半径补充搜索，仿领导工具）──
         _th = st.session_state.get("eval_transit_hubs") or {}
