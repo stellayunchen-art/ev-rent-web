@@ -825,7 +825,7 @@ def render_rent_trend_chart(city: str, district: str):
         tooltip=[alt.Tooltip("name:N", title="站点"), alt.Tooltip("audit_date:T", title="内审日期"), alt.Tooltip("unit_rent:Q", title="租金")]
     )
     trend = base.transform_regression("audit_date", "unit_rent", method="linear").mark_line(color="#c1372f", strokeWidth=2)
-    st.altair_chart((points + trend).properties(height=200), width="stretch")
+    st.altair_chart((points + trend).properties(height=200), use_container_width=True)
     st.caption(f"📉 {district}历史{len(hist)}个场地成交价，红线为时间趋势拟合——模型预测时会参考这条趋势自动折算当前行情价")
 
 
@@ -1244,7 +1244,7 @@ if submitted:
         st.error("请先在 Secrets 中配置 COZE_TOKEN")
         st.stop()
 
-    with st.status("评估进行中…", expanded=True) as status_box:
+    with st.status("评估进行中…", expanded=False) as status_box:
 
         # Step 1：坐标（手动输入优先，否则 Geocode）
         # 兼容中文逗号「，」
