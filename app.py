@@ -866,7 +866,8 @@ def render_report_sections(result: str):
     # 关键结论已在顶部卡片/图表呈现，报告全部折叠作为备查详情
     # 💡规律归纳同质化、🔥热力值暂不需要；📍站点定位已在地图区、💰租金建议已在价格卡+锚点推理展示
     EXPANDED_SECTIONS = ()
-    HIDDEN_SECTIONS = ("💡", "🔥", "📍", "💰")
+    # 📚参考案例已在上方"对标案例对比"表格+下方"一键复制纯文本"里展示过，此处不再重复渲染
+    HIDDEN_SECTIONS = ("💡", "🔥", "📍", "💰", "📚")
     for sec in sections:
         title = sec[0].strip()
         if any(title.startswith(e) for e in HIDDEN_SECTIONS):
@@ -1572,6 +1573,7 @@ Promise.allSettled(CATS.map(c => loadCat(c[0], c[1], c[2]))).catch(() => {{}});
                     rows_.append({
                         "来源": "🎯最近对标",
                         "站点": brow["name"],
+                        "行政区": str(brow.get("district", "") or "—"),
                         "距离(km)": round(d_km, 2),
                         "内审日期": _audit_display(brow.get("audit_date")),
                         "商圈类型": str(brow.get("bc_type", "") or "—"),
@@ -1585,6 +1587,7 @@ Promise.allSettled(CATS.map(c => loadCat(c[0], c[1], c[2]))).catch(() => {{}});
                     rows_.append({
                         "来源": "🏭全市补充",
                         "站点": brow["name"],
+                        "行政区": str(brow.get("district", "") or "—"),
                         "距离(km)": round(d_km, 2),
                         "内审日期": _audit_display(brow.get("audit_date")),
                         "商圈类型": str(brow.get("bc_type", "") or "—"),
@@ -1600,6 +1603,7 @@ Promise.allSettled(CATS.map(c => loadCat(c[0], c[1], c[2]))).catch(() => {{}});
                     rows_.append({
                         "来源": "",
                         "站点": "★ 本站建议",
+                        "行政区": district or "—",
                         "距离(km)": None,
                         "内审日期": "—",
                         "商圈类型": _bc_m.group(1).strip() if _bc_m else "—",
@@ -1614,6 +1618,7 @@ Promise.allSettled(CATS.map(c => loadCat(c[0], c[1], c[2]))).catch(() => {{}});
                     _df_show, hide_index=True, width="stretch",
                     column_config={
                         "来源":       st.column_config.TextColumn(width="small"),
+                        "行政区":     st.column_config.TextColumn(width="small"),
                         "距离(km)":   st.column_config.TextColumn(width="small"),
                         "成交租金(元)": st.column_config.NumberColumn(format="¥%d"),
                         "租金边界(元)": st.column_config.NumberColumn(format="¥%d"),

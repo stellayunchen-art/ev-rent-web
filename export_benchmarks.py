@@ -10,9 +10,9 @@ import csv
 from pathlib import Path
 
 # ─── 修改这里 ──────────────────────────────────────────────
-_BASE     = Path("/Users/stellachan/Documents/AI Application/租金管理表/AI租金自动评估")
-_UPDATED  = _BASE / "换电站选址租金知识库_租金评估结果AI自动化更新_updated.xlsx"
-_ORIGINAL = _BASE / "换电站选址租金知识库_租金评估结果AI自动化更新.xlsx"
+_BASE     = Path("/Users/stellachan/Documents/JV/租金管理表/租金评估")
+_UPDATED  = _BASE / "AI租金自动评估" / "换电站选址租金知识库_租金评估结果AI自动化更新_updated.xlsx"
+_ORIGINAL = _BASE / "换电站知识库" / "换电站选址租金知识库_租金评估结果AI自动化更新.xlsx"
 INPUT_FILE = _UPDATED if _UPDATED.exists() else _ORIGINAL
 OUTPUT_CSV = Path(__file__).parent / "benchmarks.csv"   # 输出到 coze网页版/ 目录
 SHEET_NAME = "案例知识库"
@@ -22,6 +22,7 @@ SHEET_NAME = "案例知识库"
 C_NAME  = 2   # B 站点名称
 C_DATE  = 4   # D 内审日期
 C_CITY  = 6   # F 城市
+C_DIST  = 7   # G 行政区
 C_COORD = 9   # I 坐标
 C_BC    = 10  # J 商圈类型
 C_AREA  = 11  # K 区域类型
@@ -32,7 +33,7 @@ C_UNIT  = 15  # O 单车位租金
 C_BOUND = 16  # P 单车位租金边界
 DATA_START = 2
 
-FIELDS = ["name", "city", "coord", "bc_type", "area_type", "road_cond", "road_type", "unit_rent", "bound_rent", "audit_date"]
+FIELDS = ["name", "city", "district", "coord", "bc_type", "area_type", "road_cond", "road_type", "unit_rent", "bound_rent", "audit_date"]
 
 
 def safe(v) -> str:
@@ -73,6 +74,7 @@ def main():
         rows.append({
             "name":      name,
             "city":      safe(ws.cell(r, C_CITY).value),
+            "district":  safe(ws.cell(r, C_DIST).value),
             "coord":     coord,
             "bc_type":   safe(ws.cell(r, C_BC).value),
             "area_type": safe(ws.cell(r, C_AREA).value),
