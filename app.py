@@ -1682,8 +1682,8 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
                         st.markdown("".join(_loc_html), unsafe_allow_html=True)
 
 
-        # ── 证据与明细（三个tab折叠展示，避免5-6张卡片一路堆到底）──
-        st.markdown("##### 📎 证据与明细")
+        # ── 详细分析（三个tab折叠展示，避免5-6张卡片一路堆到底）──
+        st.markdown("##### 🔍 详细分析")
         _tab_facility, _tab_bench, _tab_report = st.tabs(["📡 周边设施", "📊 对标案例", "📋 AI评估报告"])
         with _tab_facility:
             # ── 周边设施统计（紧凑横向条：3类服务器端 + 住宅小区浏览器端）──
@@ -1800,7 +1800,11 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
                             f"{'、'.join(_transit_items)}</div>",
                             unsafe_allow_html=True,
                         )
-                    st.caption("以下为固定半径补充搜索（仅供参考，不进AI评估）")
+                    st.caption(
+                        "🚇 2km内地铁/高铁/城轨的数量已作为模型特征参与租金预测（反映轨道交通通达性）。"
+                        "以下高速/高铁站/汽车站/机场为**更大半径的区域连通性参考**——"
+                        "多数站点周边为0、区分度低，纳入566样本的模型易过拟合，故暂只作展示，不进模型。"
+                    )
                     for _label, _radius, _count, _nearest in _th.get("hubs", []):
                         _rk = int(_radius / 1000)
                         _detail = f"最近 {_nearest}m" if _nearest else "范围内无"
