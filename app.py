@@ -338,13 +338,37 @@ def _model_feature_row(city, district, transit_count, industrial_count, mall_cou
     }])
 
 
-def predict_target_rent(city: str, district: str, transit_count: int, industrial_count: int, mall_count: int, hub_counts: dict = None):
+def _derive_boundary(std_low, std_high, bench_rows):
+    """边界上限：以周边对标案例的边界为基准，再用行政区标准上下限硬性封顶。
+    ⚠️ 不再无脑取行政区标准上限——那会在对标案例边界普遍偏低时（如工业区周边案例
+    边界700-850，但行政区标准上限1000）把边界顶到不合理的高位（用户实测黄埔云埔工业区案例）。
+    取法：对标案例边界的最大值（多个近距离案例支持的最高水平），封顶到行政区标准上限、
+    不低于标准下限。早期/特批案例的边界仍可参考（成交价不参考、边界可参考，符合既有规则）。
+    无任何对标案例边界可用时，退回行政区标准上限（老逻辑兜底）。"""
+    bounds = []
+    for _d_km, row in (bench_rows or []):
+        try:
+            b = float(str(row.get("bound_rent", "")).replace(",", "").strip())
+            if b > 0:
+                bounds.append(b)
+        except (ValueError, TypeError):
+            continue
+    if not bounds:
+        return std_high
+    derived = max(bounds)
+    # 封顶到行政区标准上限、不低于下限，取整到10元
+    derived = min(std_high, max(std_low, derived))
+    return round(derived / 10) * 10
+
+
+def predict_target_rent(city: str, district: str, transit_count: int, industrial_count: int, mall_count: int, hub_counts: dict = None, bench_rows=None):
     """用Ridge回归模型预测目标单车位租金，并按行政区标准范围夹取。
     模型基于历史场地训练（城市+行政区 + 2km内交通枢纽/工业园/商场数量 + 内审时间趋势
     + 高速/高铁站/汽车站/机场固定半径数量），刻意不含AI视觉分类特征，可在调用Coze前独立完成预测。
     ⚠️ 预测时代入"当前时点"（audit_num=今天），模型据此从历史时间趋势系数自动
     折算出当前行情价，效果类似领导工具的"×0.85时间折扣"，但系数由数据回归得出、
     不是人工拍定，且对任意行政区自适应生效。
+    边界上限由周边对标案例边界推导（_derive_boundary），不再无脑取行政区标准上限。
     返回 (目标租金, 边界上限, 谈判起点价)，任一环节数据缺失则返回 (None, None, None)。"""
     bundle = load_rent_model()
     std = lookup_rent_standard(city, district)
@@ -359,7 +383,8 @@ def predict_target_rent(city: str, district: str, transit_count: int, industrial
         return None, None, None
 
     low, high = std
-    boundary = high  # 边界=行政区标准上限（硬性规则，不由模型预测）
+    # 边界=周边对标案例边界的最高水平，封顶到行政区标准上限（不再无脑=标准上限）
+    boundary = _derive_boundary(low, high, bench_rows)
     # 目标价夹取在[标准下限, 边界×95%]——刻意不允许目标=边界，保留谈判空间
     target_cap = max(low, round(boundary * 0.95 / 10) * 10)
     target = max(low, min(target_cap, round(raw_target / 10) * 10))
@@ -1147,13 +1172,14 @@ def run_batch_prediction(name: str, address: str) -> dict:
     _, industrial_count = find_nearby_industrial(coord)
     _, mall_count = find_nearby_commercial(coord)
     hub_counts = hub_counts_from_results(find_transit_hubs_extended(coord))
-    target, boundary, opening = predict_target_rent(city, district, transit_count, industrial_count, mall_count, hub_counts)
+    # 先取对标案例（边界推导要用），再预测
+    df = load_benchmarks()
+    benches = find_benchmarks(coord, city, row["站点名称"], df)
+    target, boundary, opening = predict_target_rent(city, district, transit_count, industrial_count, mall_count, hub_counts, bench_rows=benches)
     if target is None:
         row["备注"] = "该行政区无租金标准数据，模型无法预测"
         return row
 
-    df = load_benchmarks()
-    benches = find_benchmarks(coord, city, row["站点名称"], df)
     conf_level, conf_reasons, _ = assess_confidence(city, district, transit_count, industrial_count, mall_count, benches)
     row.update({
         "谈判起点": opening, "建议目标": round(target), "边界上限": boundary,
@@ -1359,12 +1385,13 @@ if submitted:
         hub_counts = hub_counts_from_results(transit_hubs)
 
         # Step 2.7：Ridge回归模型预测目标租金
-        # 在调用Coze之前完成，边界=行政区标准硬上限，目标=模型预测夹取在标准范围内，
-        # 起点价=目标的90%——三个数字全部由Python确定性算出，作为既定事实传给Coze，
-        # LLM不再自行判断该用哪个案例当锚点、该不该打折，只负责写支撑这些数字的说明文字。
+        # 在调用Coze之前完成，边界=周边对标案例边界的最高水平（封顶行政区标准上限），
+        # 目标=模型预测夹取在标准范围内，起点价=目标的90%——三个数字全部由Python确定性算出，
+        # 作为既定事实传给Coze，LLM不再自行判断锚点/打折，只负责写支撑这些数字的说明文字。
         st.write(f"📈 正在用统计模型预测目标租金（{model_stats_note()}）…")
         model_target, model_boundary, model_opening = predict_target_rent(
-            city, district, transit_count, industrial_count, mall_count, hub_counts
+            city, district, transit_count, industrial_count, mall_count, hub_counts,
+            bench_rows=(benches or supplement),
         )
         if model_target:
             st.write(f"  · 模型预测目标租金：{model_target:.0f} 元 ｜ 边界：{model_boundary} 元 ｜ 起点价：{model_opening:.0f} 元")
