@@ -1727,10 +1727,12 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
         _poi_items = poi_items  # 兼容下方详细分析里对_poi_items的引用
         render_location_card(result, coord)
 
-        # ── 详细分析（三个tab折叠展示，避免5-6张卡片一路堆到底）──
+        # ── 详细分析：周边设施(左) + 交通与充电枢纽(右) + 对标案例(下) + AI报告(折叠) ──
+        # 不再用tab切来切去，改为并排+纵排一屏铺开，一眼看全
         st.markdown("##### 🔍 详细分析")
-        _tab_facility, _tab_bench, _tab_report = st.tabs(["📡 周边设施", "📊 对标案例", "📋 AI评估报告"])
-        with _tab_facility:
+        _first_dist_re = re.compile(r"（(\d+)m")
+        _facility_col, _transit_col = st.columns([1.5, 1], gap="medium")
+        with _facility_col:
             # ── 周边设施统计（紧凑横向条：3类服务器端 + 住宅小区浏览器端）──
             if any(_pois.values()) or coord:
                 _chips_srv = ""
@@ -1823,6 +1825,7 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
                     components.html(_strip_html, height=300, scrolling=True)
                     st.caption("2km范围 · 前三类服务器端检索并传给AI，后五类浏览器端实时检索（仅展示参考，不参与区域类型判断——住宅类POI常混入宿舍公寓）")
 
+        with _transit_col:
             # ── 交通与充电枢纽（合并面板：2km地铁/高铁/城轨明细 + 充电站 + 固定半径补充搜索，仿领导工具）──
             _th = st.session_state.get("eval_transit_hubs") or {}
             if _th:
@@ -1862,7 +1865,8 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
                             unsafe_allow_html=True,
                         )
 
-        with _tab_bench:
+        # ── 对标案例（整幅展示在设施/交通两列下方，不再放进tab）──
+        with st.container():
             # 对标案例对比（表格+柱状图，数据来自benchmarks匹配，非LLM文本）
             _supp_for_tab = st.session_state.get("eval_supplement") or []
             if benches or _supp_for_tab:
@@ -1966,8 +1970,10 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
                     "但缺少实际成交案例佐证，建议参考左侧「低置信度」提示做人工审核。"
                 )
 
-        with _tab_report:
-            st.subheader("📋 评估报告详情")
+        # ── AI评估报告：放最下面，默认折叠。用checkbox而非expander——因为报告内部
+        # render_report_sections每节都用了st.expander，Streamlit不允许expander套expander。
+        st.markdown("##### 📋 AI 评估报告")
+        if st.checkbox("展开完整评估报告（参考案例完整推理 · 一键复制 · 下载）", value=False):
             st.caption("站点定位已在上方地图区展示，以下为参考案例与租金建议的完整推理，点击各节展开查看")
             render_report_sections(result)
             # 组装完整纯文本：站点信息 + 关键价格 + 对标案例 + AI报告
@@ -2029,8 +2035,10 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
                     )
             full_text = "\n".join(_full_lines)
 
-            with st.expander("📋 一键复制纯文本"):
-                st.code(full_text, language=None)
+            # ⚠️ 不能用嵌套expander（Streamlit禁止expander套expander，会运行时报错），
+            # 此处已在外层"AI评估报告"expander内，改用普通标题+code块展示纯文本。
+            st.markdown("**📋 一键复制纯文本**")
+            st.code(full_text, language=None)
             st.download_button(
                 label="💾 下载报告（.txt）",
                 data=full_text,
