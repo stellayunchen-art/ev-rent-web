@@ -1447,63 +1447,58 @@ if eval_mode == "批量评估" and st.session_state.batch_results:
     )
     st.caption("以上仅为统计模型算的三个价格，未经AI视觉分析和报告生成；如需完整报告请切换到「单站评估」逐个跑")
 
-# ── 双视图展示（从 session_state 读取，刷新不丢失）────
-if eval_mode == "单站评估" and st.session_state.eval_result:
-    result   = st.session_state.eval_result
-    _meta    = st.session_state.eval_meta
-    f_name   = _meta.get("name", "")
-    f_addr   = _meta.get("addr", "")
-    coord    = _meta.get("coord", "")
-    city     = _meta.get("city", "")
-    district = _meta.get("district", "")
-    benches  = st.session_state.eval_benches
+# ── 财务BP视图 / 商务同事视图 共用的渲染组件 ───────────────
+# 抽成函数，让两个视图都能复用同一套站点头/价格卡/周边定位卡，改一处两处都变，不再各写一份。
+def poi_items(text):
+    return [l.strip() for l in (text or "").split("\n")[1:] if l.strip()]
 
-    st.divider()
-    tab_finance, tab_biz = st.tabs(["📊 财务BP 完整报告", "💼 商务同事视图"])
 
-    # ── 财务BP 视图 ───────────────────────────
-    with tab_finance:
-        # 场地信息头条（城市/行政区/街道/识别地址/坐标一行看全）
-        _township = (st.session_state.get("eval_roads") or {}).get("township", "")
-        st.markdown(
-            f"""
+def render_site_header(f_name, city, district, township, f_addr, coord):
+    """场地信息头条：站点名 + 城市·行政区·街道 + 高德识别地址 + 坐标。"""
+    st.markdown(
+        f"""
 <div style="display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;margin:2px 0 2px">
   <span style="font-size:1.2rem;font-weight:600;color:var(--app-text)">📍 {f_name or '—'}</span>
-  <span style="font-size:1rem;font-weight:500;color:var(--app-text-secondary)">{city} · {district}{('·' + _township) if _township else ''}</span>
+  <span style="font-size:1rem;font-weight:500;color:var(--app-text-secondary)">{city} · {district}{('·' + township) if township else ''}</span>
 </div>
 <div style="color:var(--app-text-muted);font-size:0.85rem;margin-bottom:12px">
   高德识别地址：{f_addr}　|　坐标：{coord}
 </div>
 """,
-            unsafe_allow_html=True,
-        )
+        unsafe_allow_html=True,
+    )
 
-        # 关键数字一览：优先用Python统计模型算出的确定性数字（session_state.eval_model），
-        # 只有模型不可用（如查不到行政区标准）时才退回从AI报告文字里正则提取
-        _model_nums = st.session_state.get("eval_model") or {}
-        if _model_nums.get("target"):
-            _boundary = str(int(_model_nums["boundary"]))
-            _target   = str(int(round(_model_nums["target"])))
-            _opening  = str(int(round(_model_nums["opening"])))
-        else:
-            _boundary = extract_boundary(result)
-            _target, _opening = extract_key_numbers(result)
-        if any([_boundary, _target, _opening]):
-            # 行政区土地租金标准范围：优先查本地rent_standard.csv，查不到再退回从报告文字提取
-            _std = lookup_rent_standard(city, district)
-            if _std:
-                _range_str = f"{_std[0]} – {_std[1]}"
-            else:
-                _range_m = re.search(r"租金标准[^\d]{0,15}(\d+)\s*[-–~至—]\s*(\d+)", result)
-                _range_str = f"{_range_m.group(1)} – {_range_m.group(2)}" if _range_m else "—"
-            # 价格主卡：横向三价并排（起点→目标居中最大→边界），底部注明标准范围与数字来源
-            _t = _target if _target else "—"
-            _o = _opening if _opening else "—"
-            _b = _boundary if _boundary else "—"
-            _src_note = (f"统计模型计算 · {model_stats_note()}"
-                         if _model_nums.get("target") else "AI评估提取")
-            st.markdown(
-                f"""
+
+def compute_price_numbers(result, city, district):
+    """算出价格卡要用的三价+标准范围+数据来源。无价格时返回None。"""
+    model_nums = st.session_state.get("eval_model") or {}
+    if model_nums.get("target"):
+        boundary = str(int(model_nums["boundary"]))
+        target   = str(int(round(model_nums["target"])))
+        opening  = str(int(round(model_nums["opening"])))
+    else:
+        boundary = extract_boundary(result)
+        target, opening = extract_key_numbers(result)
+    if not any([boundary, target, opening]):
+        return None
+    std = lookup_rent_standard(city, district)
+    if std:
+        range_str = f"{std[0]} – {std[1]}"
+    else:
+        rm = re.search(r"租金标准[^\d]{0,15}(\d+)\s*[-–~至—]\s*(\d+)", result)
+        range_str = f"{rm.group(1)} – {rm.group(2)}" if rm else "—"
+    src_note = (f"统计模型计算 · {model_stats_note()}" if model_nums.get("target") else "AI评估提取")
+    return {"model_nums": model_nums, "target": target, "opening": opening,
+            "boundary": boundary, "range_str": range_str, "src_note": src_note}
+
+
+def render_price_hero(nums):
+    """价格主卡：谈判起点 / 建议目标（居中放大深色块）/ 边界上限 + 标准范围 + 数据来源。"""
+    _t = nums["target"] or "—"
+    _o = nums["opening"] or "—"
+    _b = nums["boundary"] or "—"
+    st.markdown(
+        f"""
 <div style="background:var(--app-accent-soft);border:1px solid var(--app-border);
      border-radius:14px;padding:22px 24px 14px;text-align:center;margin-bottom:10px">
   <div style="font-size:0.9rem;color:var(--app-text-secondary);margin-bottom:16px">综合建议租金（首年价，元/车位/月）</div>
@@ -1523,12 +1518,146 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
   </div>
   <div style="margin-top:16px;padding-top:10px;border-top:1px solid var(--app-border-strong);
        font-size:0.8rem;color:var(--app-text-muted)">
-    🏛️ 行政区租金标准 {_range_str} 元/车位/月　·　📈 {_src_note}
+    🏛️ 行政区租金标准 {nums['range_str']} 元/车位/月　·　📈 {nums['src_note']}
   </div>
 </div>
 """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_location_card(result, coord):
+    """站点周边与定位卡：左侧静态地图标签页 + 右侧AI定位分析（商圈/道路/地段+周边路网）。"""
+    if not coord:
+        return
+    with st.container(border=True):
+        st.markdown("##### 🗺️ 站点周边与定位")
+        # 关键特征高亮条：区域性质描述（商圈类型）· 道路描述+通达结论
+        _bc_val = _rd_val = _bc_rs = _rd_rs = ""
+        _last_lbl = None
+        for _l in get_section_lines(result, "📍"):
+            _s = _l.strip()
+            _m = re.match(r"^商圈类型[：:]\s*(.+)$", _s)
+            if _m:
+                _bc_val, _last_lbl = _m.group(1).strip(), "bc"
+                continue
+            _m = re.match(r"^道路条件[：:]\s*(.+)$", _s)
+            if _m:
+                _rd_val, _last_lbl = _m.group(1).strip(), "rd"
+                continue
+            _m = re.match(r"^依据[：:]\s*(.+)$", _s)
+            if _m and _last_lbl == "bc":
+                _bc_rs = _m.group(1).strip()
+            elif _m and _last_lbl == "rd":
+                _rd_rs = _m.group(1).strip()
+        if _bc_val or _rd_val:
+            _bc_first = re.split(r"[，。；,;]", _bc_rs)[0] if _bc_rs else ""
+            _rd_first = re.split(r"[，。；,;]", _rd_rs)[0] if _rd_rs else ""
+            _left  = f"{_bc_first}（{_bc_val}）" if _bc_first else _bc_val
+            _right = f"{_rd_first}，{_rd_val}" if _rd_first else _rd_val
+            _feat = " · ".join(x for x in (_left, _right) if x)
+            st.markdown(
+                f"<div style='background:var(--app-accent-soft);border:1px solid var(--app-border);border-radius:10px;"
+                f"padding:9px 16px;color:var(--app-accent);font-size:0.95rem;font-weight:600;"
+                f"margin-bottom:12px'>{_feat}</div>",
                 unsafe_allow_html=True,
             )
+        # 左图右文布局：左侧地图标签页，右侧AI定位分析
+        _col_map, _col_txt = st.columns([1.1, 1], gap="medium")
+        with _col_map:
+            render_static_maps(coord)
+        with _col_txt:
+            _loc_html = []
+            _LABEL_COLORS = {"商圈类型": "#3b6fd1", "道路条件": "#d98c22", "地段价值": "#2b9e6f"}
+
+            def _sec_open(label, value, value_size="1.15rem", value_bold=True):
+                w = "700" if value_bold else "400"
+                c = _LABEL_COLORS.get(label, "#9aa7bd")
+                return (
+                    f"<div style='margin-bottom:20px;padding-left:11px;border-left:3px solid {c}'>"
+                    f"<div style='font-size:0.78rem;color:{c};letter-spacing:2px;font-weight:700;margin-bottom:3px'>{label}</div>"
+                    f"<div style='font-size:{value_size};font-weight:{w};color:var(--app-text);line-height:1.75'>{value}</div>"
+                )
+
+            _blocks = []
+            for _raw in get_section_lines(result, "📍"):
+                _s = _raw.strip()
+                if not _s:
+                    continue
+                _m = re.match(r"^(商圈类型|道路条件)[：:]\s*(.+)$", _s)
+                if _m:
+                    _blocks.append({"label": _m.group(1), "value": _m.group(2), "reason": ""})
+                    continue
+                _m = re.match(r"^依据[：:]\s*(.+)$", _s)
+                if _m and _blocks:
+                    _blocks[-1]["reason"] = _m.group(1)
+                    continue
+                _m = re.match(r"^地段价值[：:]\s*(.+)$", _s)
+                if _m:
+                    _blocks.append({"label": "地段价值", "value": _m.group(1), "reason": "", "plain": True})
+                    continue
+
+            for _b in _blocks:
+                _plain = _b.get("plain")
+                _loc_html.append(_sec_open(
+                    _b["label"], _b["value"],
+                    value_size="0.95rem" if _plain else "1.15rem",
+                    value_bold=not _plain,
+                ))
+                if _b["reason"]:
+                    _loc_html.append(
+                        f"<div style='margin-top:7px;color:var(--app-text-muted);font-size:0.85rem;line-height:1.9'>{_b['reason']}</div>"
+                    )
+                _loc_html.append("</div>")
+
+            # 周边路网：胶囊标签（regeo最近道路，只列名称/方位/距离，不猜等级）
+            _roads = (st.session_state.get("eval_roads") or {}).get("roads") or []
+            if _roads:
+                _pills = "".join(
+                    f"<span style='background:#f2f6fd;border:1px solid #e3eaf6;border-radius:999px;"
+                    f"padding:4px 13px;font-size:0.82rem;color:var(--app-text-secondary);display:inline-block;"
+                    f"margin:0 8px 8px 0;white-space:nowrap'>"
+                    f"<b style='color:var(--app-text)'>{n}</b>　{d}侧 · 约{dist:.0f}m</span>"
+                    for n, d, dist in _roads
+                )
+                _loc_html.append(
+                    f"<div style='padding-top:14px;border-top:1px dashed #dbe4f3;"
+                    f"padding-left:11px;border-left:3px solid #8b5cf6'>"
+                    f"<div style='font-size:0.78rem;color:#8b5cf6;letter-spacing:2px;font-weight:700;margin-bottom:8px'>周边路网</div>"
+                    f"{_pills}</div>"
+                )
+            if _loc_html:
+                st.markdown("".join(_loc_html), unsafe_allow_html=True)
+
+
+# ── 双视图展示（从 session_state 读取，刷新不丢失）────
+if eval_mode == "单站评估" and st.session_state.eval_result:
+    result   = st.session_state.eval_result
+    _meta    = st.session_state.eval_meta
+    f_name   = _meta.get("name", "")
+    f_addr   = _meta.get("addr", "")
+    coord    = _meta.get("coord", "")
+    city     = _meta.get("city", "")
+    district = _meta.get("district", "")
+    benches  = st.session_state.eval_benches
+
+    st.divider()
+    tab_finance, tab_biz = st.tabs(["📊 财务BP 完整报告", "💼 商务同事视图"])
+
+    # ── 财务BP 视图 ───────────────────────────
+    with tab_finance:
+        # 场地信息头条（复用共享组件）
+        _township = (st.session_state.get("eval_roads") or {}).get("township", "")
+        render_site_header(f_name, city, district, _township, f_addr, coord)
+
+        # 关键数字：统计模型优先，模型不可用时回退AI文字提取（compute_price_numbers内部处理）
+        _model_nums = st.session_state.get("eval_model") or {}
+        _price = compute_price_numbers(result, city, district)
+        _target   = _price["target"] if _price else ""
+        _opening  = _price["opening"] if _price else ""
+        _boundary = _price["boundary"] if _price else ""
+        if _price:
+            render_price_hero(_price)
             # 置信度徽章 + 低置信度警示（确定性规则评估，借鉴领导工具设计）
             _conf = st.session_state.get("eval_confidence") or {}
             _lv = _conf.get("level")
@@ -1593,119 +1722,10 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
                         )
                         render_price_explainability(_explain)
 
-        # ── 站点周边：静态地图 + 站点定位描述（上图下文）──
+        # ── 站点周边与定位（复用共享组件）──
         _pois = st.session_state.get("eval_pois") or {}
-
-        def _poi_items(text):
-            return [l.strip() for l in (text or "").split("\n")[1:] if l.strip()]
-
-        if coord:
-            with st.container(border=True):
-                st.markdown("##### 🗺️ 站点周边与定位")
-                # 关键特征高亮条：区域性质描述（商圈类型）· 道路描述+通达结论（仿领导版）
-                _bc_val = _rd_val = _bc_rs = _rd_rs = ""
-                _last_lbl = None
-                for _l in get_section_lines(result, "📍"):
-                    _s = _l.strip()
-                    _m = re.match(r"^商圈类型[：:]\s*(.+)$", _s)
-                    if _m:
-                        _bc_val, _last_lbl = _m.group(1).strip(), "bc"
-                        continue
-                    _m = re.match(r"^道路条件[：:]\s*(.+)$", _s)
-                    if _m:
-                        _rd_val, _last_lbl = _m.group(1).strip(), "rd"
-                        continue
-                    _m = re.match(r"^依据[：:]\s*(.+)$", _s)
-                    if _m and _last_lbl == "bc":
-                        _bc_rs = _m.group(1).strip()
-                    elif _m and _last_lbl == "rd":
-                        _rd_rs = _m.group(1).strip()
-                if _bc_val or _rd_val:
-                    _bc_first = re.split(r"[，。；,;]", _bc_rs)[0] if _bc_rs else ""
-                    _rd_first = re.split(r"[，。；,;]", _rd_rs)[0] if _rd_rs else ""
-                    _left  = f"{_bc_first}（{_bc_val}）" if _bc_first else _bc_val
-                    _right = f"{_rd_first}，{_rd_val}" if _rd_first else _rd_val
-                    _feat = " · ".join(x for x in (_left, _right) if x)
-                    st.markdown(
-                        f"<div style='background:var(--app-accent-soft);border:1px solid var(--app-border);border-radius:10px;"
-                        f"padding:9px 16px;color:var(--app-accent);font-size:0.95rem;font-weight:600;"
-                        f"margin-bottom:12px'>{_feat}</div>",
-                        unsafe_allow_html=True,
-                    )
-                # 左图右文布局（仿领导版）：左侧地图标签页，右侧AI定位分析
-                _col_map, _col_txt = st.columns([1.1, 1], gap="medium")
-                with _col_map:
-                    render_static_maps(coord)
-                with _col_txt:
-                    # 右侧定位分析：小标签 → 大结论 → 松弛依据，段落间大留白
-                    _loc_html = []
-
-                    # 每类标签配一个专属强调色，一眼区分（左侧色块+彩色标签文字）
-                    _LABEL_COLORS = {
-                        "商圈类型": "#3b6fd1",   # 蓝
-                        "道路条件": "#d98c22",   # 橙
-                        "地段价值": "#2b9e6f",   # 绿
-                    }
-
-                    def _sec_open(label, value, value_size="1.15rem", value_bold=True):
-                        w = "700" if value_bold else "400"
-                        c = _LABEL_COLORS.get(label, "#9aa7bd")
-                        return (
-                            f"<div style='margin-bottom:20px;padding-left:11px;border-left:3px solid {c}'>"
-                            f"<div style='font-size:0.78rem;color:{c};letter-spacing:2px;font-weight:700;margin-bottom:3px'>{label}</div>"
-                            f"<div style='font-size:{value_size};font-weight:{w};color:var(--app-text);line-height:1.75'>{value}</div>"
-                        )
-
-                    _blocks = []   # 每个元素是一段完整HTML
-                    for _raw in get_section_lines(result, "📍"):
-                        _s = _raw.strip()
-                        if not _s:
-                            continue
-                        _m = re.match(r"^(商圈类型|道路条件)[：:]\s*(.+)$", _s)
-                        if _m:
-                            _blocks.append({"label": _m.group(1), "value": _m.group(2), "reason": ""})
-                            continue
-                        _m = re.match(r"^依据[：:]\s*(.+)$", _s)
-                        if _m and _blocks:
-                            _blocks[-1]["reason"] = _m.group(1)
-                            continue
-                        _m = re.match(r"^地段价值[：:]\s*(.+)$", _s)
-                        if _m:
-                            _blocks.append({"label": "地段价值", "value": _m.group(1), "reason": "", "plain": True})
-                            continue
-
-                    for _b in _blocks:
-                        _plain = _b.get("plain")
-                        _loc_html.append(_sec_open(
-                            _b["label"], _b["value"],
-                            value_size="0.95rem" if _plain else "1.15rem",
-                            value_bold=not _plain,
-                        ))
-                        if _b["reason"]:
-                            _loc_html.append(
-                                f"<div style='margin-top:7px;color:var(--app-text-muted);font-size:0.85rem;line-height:1.9'>{_b['reason']}</div>"
-                            )
-                        _loc_html.append("</div>")
-
-                    # 周边路网：胶囊标签（regeo最近道路，只列名称/方位/距离，不猜等级）
-                    _roads = (st.session_state.get("eval_roads") or {}).get("roads") or []
-                    if _roads:
-                        _pills = "".join(
-                            f"<span style='background:#f2f6fd;border:1px solid #e3eaf6;border-radius:999px;"
-                            f"padding:4px 13px;font-size:0.82rem;color:var(--app-text-secondary);display:inline-block;"
-                            f"margin:0 8px 8px 0;white-space:nowrap'>"
-                            f"<b style='color:var(--app-text)'>{n}</b>　{d}侧 · 约{dist:.0f}m</span>"
-                            for n, d, dist in _roads
-                        )
-                        _loc_html.append(
-                            f"<div style='padding-top:14px;border-top:1px dashed #dbe4f3;"
-                            f"padding-left:11px;border-left:3px solid #8b5cf6'>"
-                            f"<div style='font-size:0.78rem;color:#8b5cf6;letter-spacing:2px;font-weight:700;margin-bottom:8px'>周边路网</div>"
-                            f"{_pills}</div>"
-                        )
-                    if _loc_html:
-                        st.markdown("".join(_loc_html), unsafe_allow_html=True)
-
+        _poi_items = poi_items  # 兼容下方详细分析里对_poi_items的引用
+        render_location_card(result, coord)
 
         # ── 详细分析（三个tab折叠展示，避免5-6张卡片一路堆到底）──
         st.markdown("##### 🔍 详细分析")
@@ -2020,19 +2040,24 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
             )
 
     # ── 商务同事 视图 ─────────────────────────
+    # 与财务视图共用站点头/价格卡/周边定位卡（不显示置信度拆解和详细分析tab，保持简洁），
+    # 底部保留周边参考站点表（成交租金口径）。
     with tab_biz:
-        target_rent, opening_price = extract_key_numbers(result)
+        _township_b = (st.session_state.get("eval_roads") or {}).get("township", "")
+        render_site_header(f_name, city, district, _township_b, f_addr, coord)
 
-        # 1. 站点确认
-        with st.container(border=True):
-            st.markdown("#### ✅ 站点确认")
-            st.markdown(f"**站点名称：** {f_name}")
-            st.markdown(f"**地址：** {f_addr}")
-            st.markdown(f"**城市 / 行政区：** {city} · {district}")
+        _price_b = compute_price_numbers(result, city, district)
+        if _price_b:
+            render_price_hero(_price_b)
+        else:
+            st.info("暂无价格数据，请查看「财务BP 完整报告」标签页")
 
-        # 2. 周边参考站点（距离 + 单车位租金，不显示边界）
+        # 站点周边与定位（地图 + 商圈/道路/地段 + 周边路网）
+        render_location_card(result, coord)
+
+        # 周边参考站点（距离 + 成交租金，不显示边界；商务同事只需知道邻站实际成交多少）
         with st.container(border=True):
-            st.markdown("#### 📍 周边参考站点")
+            st.markdown("##### 📍 周边参考站点")
             if benches:
                 table_rows = []
                 for d_km, row in benches:
@@ -2044,15 +2069,8 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
                     table_rows.append({
                         "站点名称":   row["name"],
                         "直线距离":   f"{round(d_km, 2)} km",
-                        "单车位租金": unit_rent_display if unit_rent and unit_rent != "nan" else "—",
+                        "成交租金": unit_rent_display if unit_rent and unit_rent != "nan" else "—",
                     })
                 st.table(pd.DataFrame(table_rows))
             else:
                 st.info("同城市内未找到近距离参考站点")
-
-        # 3. 核心数字
-        c1, c2 = st.columns(2)
-        c1.metric("🎯 AI 建议成交价", f"{target_rent} 元/车位/月" if target_rent else "—")
-        c2.metric("🤝 谈判起点报价", f"{opening_price} 元/车位/月" if opening_price else "—")
-        if not target_rent or not opening_price:
-            st.caption("部分数字未能自动提取，请查看「财务BP 完整报告」标签页")
