@@ -18,22 +18,28 @@ OUTPUT_CSV = Path(__file__).parent / "benchmarks.csv"   # 输出到 coze网页�
 SHEET_NAME = "案例知识库"
 # ───────────────────────────────────────────────────────────
 
-# 列索引（1-based，与 update_new_stations_v2.py 保持一致）
-C_NAME  = 2   # B 站点名称
-C_DATE  = 4   # D 内审日期
-C_CITY  = 6   # F 城市
-C_DIST  = 7   # G 行政区
-C_COORD = 9   # I 坐标
-C_BC    = 10  # J 商圈类型
-C_AREA  = 11  # K 区域类型
-C_ROADC = 12  # L 道路条件
-C_ROADT = 13  # M 道路类型
-# N=14 场地类型（跳过）
-C_UNIT  = 15  # O 单车位租金
-C_BOUND = 16  # P 单车位租金边界
 DATA_START = 2
 
 FIELDS = ["name", "city", "district", "coord", "bc_type", "area_type", "road_cond", "road_type", "unit_rent", "bound_rent", "audit_date"]
+
+# ⚠️ 不再用硬编码列号！2026-07-15发现Excel删掉"场地类型"列后，O列以后整体左移一列，
+# 硬编码列号（C_UNIT=15等）读到了错误的列（unit_rent读成了边界、bound_rent读成了站点名称）。
+# 改为按表头名称查列——只要表头文字不变，列增删移动都不受影响。
+# 表头名→字段名映射（Excel第1行的列标题）：
+HEADER_MAP = {
+    "站点名称":       "name",
+    "内审日期":       "audit_date",
+    "城市":           "city",
+    "坐标":           "coord",
+    "商圈类型":       "bc_type",
+    "区域类型":       "area_type",
+    "道路条件":       "road_cond",
+    "道路类型":       "road_type",
+    "单车位租金":     "unit_rent",
+    "单车位租金边界": "bound_rent",
+}
+# 行政区列的表头历史上有两种叫法，任一命中即可
+DISTRICT_HEADERS = ("行政区", "区/县街道/镇", "区/县")
 
 
 def safe(v) -> str:
@@ -41,6 +47,28 @@ def safe(v) -> str:
         return ""
     s = str(v).strip()
     return "" if s in ("#N/A", "None", "nan") else s
+
+
+def resolve_columns(ws) -> dict:
+    """读第1行表头，返回 {字段名: 列号(1-based)}。找不到关键列时报错退出。"""
+    header_to_col = {}
+    for c in range(1, ws.max_column + 1):
+        h = safe(ws.cell(1, c).value)
+        if h:
+            header_to_col[h] = c
+    cols = {}
+    for header, field in HEADER_MAP.items():
+        if header not in header_to_col:
+            raise KeyError(f"Excel表头缺少「{header}」列，当前表头：{list(header_to_col)}")
+        cols[field] = header_to_col[header]
+    # 行政区：兼容多种表头名
+    for dh in DISTRICT_HEADERS:
+        if dh in header_to_col:
+            cols["district"] = header_to_col[dh]
+            break
+    else:
+        cols["district"] = None  # 找不到就留空，不阻断导出
+    return cols
 
 
 def main():
@@ -60,11 +88,18 @@ def main():
     for m in list(ws.merged_cells.ranges):
         ws.unmerge_cells(str(m))
 
+    cols = resolve_columns(ws)
+    print(f"按表头解析到列号：{cols}")
+
+    def cell(r, field):
+        c = cols.get(field)
+        return ws.cell(r, c).value if c else None
+
     rows = []
     skipped = 0
     for r in range(DATA_START, ws.max_row + 1):
-        name  = safe(ws.cell(r, C_NAME).value)
-        coord = safe(ws.cell(r, C_COORD).value)
+        name  = safe(cell(r, "name"))
+        coord = safe(cell(r, "coord"))
 
         # 跳过：无名称 / 坐标为空 / 待评估（新增未过会站点不作为对标）
         if not name or "," not in coord:
@@ -73,16 +108,16 @@ def main():
 
         rows.append({
             "name":      name,
-            "city":      safe(ws.cell(r, C_CITY).value),
-            "district":  safe(ws.cell(r, C_DIST).value),
+            "city":      safe(cell(r, "city")),
+            "district":  safe(cell(r, "district")),
             "coord":     coord,
-            "bc_type":   safe(ws.cell(r, C_BC).value),
-            "area_type": safe(ws.cell(r, C_AREA).value),
-            "road_cond": safe(ws.cell(r, C_ROADC).value),
-            "road_type": safe(ws.cell(r, C_ROADT).value),
-            "unit_rent": safe(ws.cell(r, C_UNIT).value),
-            "bound_rent":safe(ws.cell(r, C_BOUND).value),
-            "audit_date":safe(ws.cell(r, C_DATE).value)[:10],  # 内审日期，仅保留年月日
+            "bc_type":   safe(cell(r, "bc_type")),
+            "area_type": safe(cell(r, "area_type")),
+            "road_cond": safe(cell(r, "road_cond")),
+            "road_type": safe(cell(r, "road_type")),
+            "unit_rent": safe(cell(r, "unit_rent")),
+            "bound_rent":safe(cell(r, "bound_rent")),
+            "audit_date":safe(cell(r, "audit_date"))[:10],  # 内审日期，仅保留年月日
         })
 
     with open(OUTPUT_CSV, "w", newline="", encoding="utf-8-sig") as f:
