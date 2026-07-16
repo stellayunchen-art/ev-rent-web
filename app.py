@@ -319,10 +319,29 @@ def _current_audit_num() -> float:
     return today.year + (today.month - 1) / 12
 
 
-def predict_target_rent(city: str, district: str, transit_count: int, industrial_count: int, mall_count: int):
+def _model_feature_row(city, district, transit_count, industrial_count, mall_count, hub_counts):
+    """组装喂给模型的一行特征DataFrame。hub_counts为{hub_*:数量}，缺失的hub补0。
+    predict_target_rent和explain_prediction共用，保证两处特征完全一致。"""
+    import pandas as _pd
+    city_clean = str(city).replace("市", "").strip()
+    hc = hub_counts or {}
+    return _pd.DataFrame([{
+        "city_district": f"{city_clean}-{district}",
+        "transit_count": transit_count,
+        "industrial_count": industrial_count,
+        "mall_count": mall_count,
+        "audit_num": _current_audit_num(),
+        "hub_highway": int(hc.get("hub_highway", 0)),
+        "hub_railway": int(hc.get("hub_railway", 0)),
+        "hub_coach": int(hc.get("hub_coach", 0)),
+        "hub_airport": int(hc.get("hub_airport", 0)),
+    }])
+
+
+def predict_target_rent(city: str, district: str, transit_count: int, industrial_count: int, mall_count: int, hub_counts: dict = None):
     """用Ridge回归模型预测目标单车位租金，并按行政区标准范围夹取。
-    模型基于历史场地训练（城市+行政区 + 2km内交通枢纽/工业园/商场数量 + 内审时间趋势），
-    刻意不含AI视觉分类特征，因此可在调用Coze之前独立完成预测。
+    模型基于历史场地训练（城市+行政区 + 2km内交通枢纽/工业园/商场数量 + 内审时间趋势
+    + 高速/高铁站/汽车站/机场固定半径数量），刻意不含AI视觉分类特征，可在调用Coze前独立完成预测。
     ⚠️ 预测时代入"当前时点"（audit_num=今天），模型据此从历史时间趋势系数自动
     折算出当前行情价，效果类似领导工具的"×0.85时间折扣"，但系数由数据回归得出、
     不是人工拍定，且对任意行政区自适应生效。
@@ -332,15 +351,7 @@ def predict_target_rent(city: str, district: str, transit_count: int, industrial
     if bundle is None or std is None:
         return None, None, None
 
-    import pandas as _pd
-    city_clean = str(city).replace("市", "").strip()
-    row = _pd.DataFrame([{
-        "city_district": f"{city_clean}-{district}",
-        "transit_count": transit_count,
-        "industrial_count": industrial_count,
-        "mall_count": mall_count,
-        "audit_num": _current_audit_num(),
-    }])
+    row = _model_feature_row(city, district, transit_count, industrial_count, mall_count, hub_counts)
     try:
         pred = bundle["pipeline"].predict(row)[0]
         raw_target = float(np.exp(pred)) if bundle["use_log"] else float(pred)
@@ -356,7 +367,7 @@ def predict_target_rent(city: str, district: str, transit_count: int, industrial
     return target, boundary, opening
 
 
-def explain_prediction(city: str, district: str, transit_count: int, industrial_count: int, mall_count: int):
+def explain_prediction(city: str, district: str, transit_count: int, industrial_count: int, mall_count: int, hub_counts: dict = None):
     """把Ridge回归模型的预测拆解成"行政区基准 × 各特征调整系数"的可读分项，
     回答"这个数字是怎么算出来的"，而不是只吐一个黑箱数字。
     数学原理：log(rent) = intercept + Σ(特征值 × 系数)，两边取exp后拆成连乘：
@@ -369,14 +380,8 @@ def explain_prediction(city: str, district: str, transit_count: int, industrial_
         pipe = bundle["pipeline"]
         pre = pipe.named_steps["pre"]
         ridge = pipe.named_steps["ridge"]
-        city_clean = str(city).replace("市", "").strip()
-        row = pd.DataFrame([{
-            "city_district": f"{city_clean}-{district}",
-            "transit_count": transit_count,
-            "industrial_count": industrial_count,
-            "mall_count": mall_count,
-            "audit_num": _current_audit_num(),
-        }])
+        _hc = hub_counts or {}
+        row = _model_feature_row(city, district, transit_count, industrial_count, mall_count, hub_counts)
         X_trans = pre.transform(row)
         if hasattr(X_trans, "toarray"):
             X_trans = X_trans.toarray()
@@ -387,10 +392,14 @@ def explain_prediction(city: str, district: str, transit_count: int, industrial_
 
     LABELS = [
         ("cat__city_district_", lambda: f"📍 {district}行政区基准"),
-        ("num__transit_count", lambda: f"🚇 交通枢纽（{transit_count}个）"),
+        ("num__transit_count", lambda: f"🚇 轨道交通2km（{transit_count}个）"),
         ("num__industrial_count", lambda: f"🏭 工业园（{industrial_count}个）"),
         ("num__mall_count", lambda: f"🏬 商业设施（{mall_count}个）"),
         ("num__audit_num", lambda: "📅 内审时间趋势"),
+        ("num__hub_railway", lambda: f"🚄 高铁/火车站5km（{int(_hc.get('hub_railway', 0))}个）"),
+        ("num__hub_highway", lambda: f"🛣️ 高速出入口3km（{int(_hc.get('hub_highway', 0))}个）"),
+        ("num__hub_coach", lambda: f"🚌 长途汽车站3km（{int(_hc.get('hub_coach', 0))}个）"),
+        ("num__hub_airport", lambda: f"✈️ 机场15km（{int(_hc.get('hub_airport', 0))}个）"),
     ]
     baseline = float(np.exp(ridge.intercept_))
     parts = []
@@ -578,17 +587,22 @@ def find_charging_stations(coord: str):
         return 0, None
 
 
+# ⚠️ 交通枢纽固定半径规格——必须与 build_station_features.py 的 HUB_SPECS 完全一致
+# （key/关键词/半径一字不差），否则训练特征和实时预测特征口径不一致，模型收到错位数据。
+# (特征名key, 展示标签, 关键词, 半径米)
+HUB_SPECS = [
+    ("hub_highway", "🛣️ 高速出入口", "高速公路出入口", 3000),
+    ("hub_railway", "🚄 高铁/火车站", "火车站|高铁站", 5000),
+    ("hub_coach",   "🚌 长途汽车站", "长途汽车站|客运站", 3000),
+    ("hub_airport", "✈️ 机场",       "机场",           15000),
+]
+
+
 def find_transit_hubs_extended(coord: str):
-    """交通枢纽固定半径搜索（仿领导工具"交通与充电枢纽"面板，纯展示，不进模型特征）：
-    高速出入口(3km)/高铁火车站(5km)/长途汽车站(3km)/机场(15km)，每类返回(数量, 最近距离)。"""
-    specs = [
-        ("🛣️ 高速出入口", "高速公路出入口", 3000),
-        ("🚄 高铁/火车站", "火车站|高铁站", 5000),
-        ("🚌 长途汽车站", "长途汽车站|客运站", 3000),
-        ("✈️ 机场", "机场", 15000),
-    ]
+    """交通枢纽固定半径搜索。返回 list[(key, 标签, 半径, 数量, 最近距离)]。
+    数量既用于页面展示，也作为模型特征（2026-07-15起高铁火车站等纳入回归模型）。"""
     results = []
-    for label, kw, radius in specs:
+    for key, label, kw, radius in HUB_SPECS:
         try:
             r = requests.get(
                 "https://restapi.amap.com/v3/place/around",
@@ -602,8 +616,13 @@ def find_transit_hubs_extended(coord: str):
             nearest = int(pois[0].get("distance") or 0) if pois else None
         except Exception:
             count, nearest = 0, None
-        results.append((label, radius, count, nearest))
+        results.append((key, label, radius, count, nearest))
     return results
+
+
+def hub_counts_from_results(transit_hubs) -> dict:
+    """从 find_transit_hubs_extended 的返回里抽出 {特征名: 数量}，喂给模型。"""
+    return {key: count for key, _label, _radius, count, _near in (transit_hubs or [])}
 
 
 def find_nearby_roads(coord: str):
@@ -1127,7 +1146,8 @@ def run_batch_prediction(name: str, address: str) -> dict:
     _, transit_count = find_nearby_transit(coord)
     _, industrial_count = find_nearby_industrial(coord)
     _, mall_count = find_nearby_commercial(coord)
-    target, boundary, opening = predict_target_rent(city, district, transit_count, industrial_count, mall_count)
+    hub_counts = hub_counts_from_results(find_transit_hubs_extended(coord))
+    target, boundary, opening = predict_target_rent(city, district, transit_count, industrial_count, mall_count, hub_counts)
     if target is None:
         row["备注"] = "该行政区无租金标准数据，模型无法预测"
         return row
@@ -1331,13 +1351,20 @@ if submitted:
             for d_km, row in supplement:
                 st.write(f"  · {row['name']}（同类型补充） — {round(d_km, 2)} km")
 
+        # Step 2.65：充电站 + 交通枢纽固定半径搜索
+        # ⚠️ 必须在Step 2.7模型预测之前算好——高铁/火车站等4类枢纽数量现在是模型特征。
+        # 充电站仍只用于展示，不进模型。
+        charging_count, charging_nearest = find_charging_stations(coord)
+        transit_hubs = find_transit_hubs_extended(coord)
+        hub_counts = hub_counts_from_results(transit_hubs)
+
         # Step 2.7：Ridge回归模型预测目标租金
         # 在调用Coze之前完成，边界=行政区标准硬上限，目标=模型预测夹取在标准范围内，
         # 起点价=目标的90%——三个数字全部由Python确定性算出，作为既定事实传给Coze，
         # LLM不再自行判断该用哪个案例当锚点、该不该打折，只负责写支撑这些数字的说明文字。
         st.write(f"📈 正在用统计模型预测目标租金（{model_stats_note()}）…")
         model_target, model_boundary, model_opening = predict_target_rent(
-            city, district, transit_count, industrial_count, mall_count
+            city, district, transit_count, industrial_count, mall_count, hub_counts
         )
         if model_target:
             st.write(f"  · 模型预测目标租金：{model_target:.0f} 元 ｜ 边界：{model_boundary} 元 ｜ 起点价：{model_opening:.0f} 元")
@@ -1346,10 +1373,6 @@ if submitted:
 
         # Step 2.75：周边路网（regeo最近道路，展示用）
         township, nearby_roads = find_nearby_roads(coord)
-
-        # Step 2.77：充电站 + 交通枢纽固定半径搜索（仿领导工具"交通与充电枢纽"面板，纯展示）
-        charging_count, charging_nearest = find_charging_stations(coord)
-        transit_hubs = find_transit_hubs_extended(coord)
 
         # Step 2.8：置信度评估（确定性规则：训练样本覆盖 + POI密度 + 对标距离）
         conf_level, conf_reasons, conf_advice = assess_confidence(
@@ -1393,6 +1416,7 @@ if submitted:
     st.session_state.eval_model   = {
         "target": model_target, "boundary": model_boundary, "opening": model_opening,
         "transit_count": transit_count, "industrial_count": industrial_count, "mall_count": mall_count,
+        "hub_counts": hub_counts,
     }
     st.session_state.eval_confidence = {"level": conf_level, "reasons": conf_reasons, "advice": conf_advice}
     st.session_state.eval_roads = {"township": township, "roads": nearby_roads}
@@ -1565,6 +1589,7 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
                             _model_nums.get("transit_count", 0),
                             _model_nums.get("industrial_count", 0),
                             _model_nums.get("mall_count", 0),
+                            _model_nums.get("hub_counts", {}),
                         )
                         render_price_explainability(_explain)
 
@@ -1805,7 +1830,7 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
                         "以下高速/高铁站/汽车站/机场为**更大半径的区域连通性参考**——"
                         "多数站点周边为0、区分度低，纳入566样本的模型易过拟合，故暂只作展示，不进模型。"
                     )
-                    for _label, _radius, _count, _nearest in _th.get("hubs", []):
+                    for _key, _label, _radius, _count, _nearest in _th.get("hubs", []):
                         _rk = int(_radius / 1000)
                         _detail = f"最近 {_nearest}m" if _nearest else "范围内无"
                         st.markdown(
