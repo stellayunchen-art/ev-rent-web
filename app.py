@@ -1492,11 +1492,27 @@ def compute_price_numbers(result, city, district):
             "boundary": boundary, "range_str": range_str, "src_note": src_note}
 
 
-def render_price_hero(nums):
-    """价格主卡：谈判起点 / 建议目标（居中放大深色块）/ 边界上限 + 标准范围 + 数据来源。"""
+def render_price_hero(nums, show_boundary=True, show_footer=True):
+    """价格主卡：谈判起点 / 建议目标（居中放大深色块）/ 边界上限 + 标准范围 + 数据来源。
+    show_boundary=False 隐藏"边界上限"卡（商务同事视图不给看边界，防止对外泄露定价上限）；
+    show_footer=False 隐藏底部"行政区标准范围 + 模型来源"那行（同样对商务同事隐藏）。"""
     _t = nums["target"] or "—"
     _o = nums["opening"] or "—"
     _b = nums["boundary"] or "—"
+    _boundary_card = (
+        f"""    <div style="background:var(--app-bg);border:1px solid var(--app-border);border-radius:12px;padding:12px 22px">
+      <div style="font-size:0.8rem;color:var(--app-text-muted)">💰 边界上限</div>
+      <div style="font-size:1.6rem;font-weight:600;line-height:1.3;color:var(--app-text)">¥{_b}</div>
+    </div>"""
+        if show_boundary else ""
+    )
+    _footer = (
+        f"""  <div style="margin-top:16px;padding-top:10px;border-top:1px solid var(--app-border-strong);
+       font-size:0.8rem;color:var(--app-text-muted)">
+    🏛️ 行政区租金标准 {nums['range_str']} 元/车位/月　·　📈 {nums['src_note']}
+  </div>"""
+        if show_footer else ""
+    )
     st.markdown(
         f"""
 <div style="background:var(--app-accent-soft);border:1px solid var(--app-border);
@@ -1511,15 +1527,9 @@ def render_price_hero(nums):
       <div style="font-size:0.85rem;color:#c9d8ea;font-weight:600">🎯 建议目标</div>
       <div style="font-size:2.6rem;font-weight:700;line-height:1.15;letter-spacing:0.3px;color:#ffffff">¥{_t}</div>
     </div>
-    <div style="background:var(--app-bg);border:1px solid var(--app-border);border-radius:12px;padding:12px 22px">
-      <div style="font-size:0.8rem;color:var(--app-text-muted)">💰 边界上限</div>
-      <div style="font-size:1.6rem;font-weight:600;line-height:1.3;color:var(--app-text)">¥{_b}</div>
-    </div>
+{_boundary_card}
   </div>
-  <div style="margin-top:16px;padding-top:10px;border-top:1px solid var(--app-border-strong);
-       font-size:0.8rem;color:var(--app-text-muted)">
-    🏛️ 行政区租金标准 {nums['range_str']} 元/车位/月　·　📈 {nums['src_note']}
-  </div>
+{_footer}
 </div>
 """,
         unsafe_allow_html=True,
@@ -2056,7 +2066,8 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
 
         _price_b = compute_price_numbers(result, city, district)
         if _price_b:
-            render_price_hero(_price_b)
+            # 商务同事视图：隐藏边界上限 + 底部行政区标准/模型来源（对外不泄露定价上限和内部依据）
+            render_price_hero(_price_b, show_boundary=False, show_footer=False)
         else:
             st.info("暂无价格数据，请查看「财务BP 完整报告」标签页")
 
