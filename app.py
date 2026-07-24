@@ -226,7 +226,6 @@ def lookup_rent_standard(city: str, district: str):
 
 
 @st.cache_resource(show_spinner=False)
-@st.cache_resource(show_spinner=False)
 def load_rent_model():
     """加载训练好的Ridge回归模型（joblib格式，含pipeline+use_log标记）。加载失败返回None。"""
     if not RENT_MODEL_PATH.exists():
@@ -1497,7 +1496,11 @@ def render_site_header(f_name, city, district, township, f_addr, coord):
 
 
 def compute_price_numbers(result, city, district):
-    """算出价格卡要用的三价+标准范围+数据来源。无价格时返回None。"""
+    """算出价格卡要用的三价+标准范围+数据来源。无价格时返回None。
+    ⚠️ std_missing=True 表示rent_standard.csv里查不到这个(city,district)组合——
+    这种情况下predict_target_rent会直接返回None，导致三个价格全部退回AI在报告文字里
+    自由判断的数字（不受统计模型约束，可信度低很多）。常见原因：地名用字不一致
+    （如"寮步镇"在标准表里被错打成"察步镇"）或该行政区确实还没收录标准。"""
     model_nums = st.session_state.get("eval_model") or {}
     if model_nums.get("target"):
         boundary = str(int(model_nums["boundary"]))
@@ -1509,6 +1512,7 @@ def compute_price_numbers(result, city, district):
     if not any([boundary, target, opening]):
         return None
     std = lookup_rent_standard(city, district)
+    std_missing = std is None
     if std:
         range_str = f"{std[0]} – {std[1]}"
     else:
@@ -1516,7 +1520,8 @@ def compute_price_numbers(result, city, district):
         range_str = f"{rm.group(1)} – {rm.group(2)}" if rm else "—"
     src_note = (f"统计模型计算 · {model_stats_note()}" if model_nums.get("target") else "AI评估提取")
     return {"model_nums": model_nums, "target": target, "opening": opening,
-            "boundary": boundary, "range_str": range_str, "src_note": src_note}
+            "boundary": boundary, "range_str": range_str, "src_note": src_note,
+            "std_missing": std_missing, "city": city, "district": district}
 
 
 def render_price_hero(nums, show_boundary=True, show_footer=True):
@@ -1694,6 +1699,20 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
         _opening  = _price["opening"] if _price else ""
         _boundary = _price["boundary"] if _price else ""
         if _price:
+            if _price.get("std_missing"):
+                # 行政区标准查不到 → 统计模型被整体跳过，三个价格全部退回AI在报告文字里
+                # 自由判断的数字，可信度远低于模型计算。常见原因：rent_standard.csv里的
+                # 地名用字和geocode返回的不一致（如"寮步镇"曾被误录成"察步镇"），也可能是
+                # 该行政区确实还没收录标准。必须显眼提示，不能只在脚注小字里悄悄写"AI评估提取"。
+                st.markdown(
+                    f"<div style='background:var(--app-danger-soft);border-left:3px solid var(--app-danger);"
+                    f"border-radius:8px;padding:12px 16px;margin-bottom:10px;font-size:0.88rem;color:var(--app-text-secondary)'>"
+                    f"<b style='color:var(--app-danger)'>⚠️ 未在行政区标准表中查到「{_price['city']} · {_price['district']}」</b><br>"
+                    f"以下三个价格均为AI在报告文字里自由判断，<b>未经统计模型计算</b>，可信度低很多。"
+                    f"请检查 rent_standard.csv 里该行政区的地名写法是否与本站一致（常见问题：形近字打错、"
+                    f"街道/镇后缀不一致），或该行政区是否尚未收录标准。</div>",
+                    unsafe_allow_html=True,
+                )
             render_price_hero(_price)
             # 置信度徽章 + 低置信度警示（确定性规则评估，借鉴领导工具设计）
             _conf = st.session_state.get("eval_confidence") or {}
