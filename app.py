@@ -239,13 +239,22 @@ def load_rent_model():
 
 def model_stats_note() -> str:
     """模型样本数+MAPE的展示文案，从joblib bundle动态读取（而不是写死数字），
-    这样每次重训模型后不用满屋子改字符串，数字自动跟着rent_model.joblib走。"""
+    这样每次重训模型后不用满屋子改字符串，数字自动跟着rent_model.joblib走。
+    ⚠️ 2026-07-19起MAPE改为5折交叉验证均值（比单次切分更稳，同一份数据单次切分
+    实测能在10%~16%间波动），mape_holdout_std存在时一并显示±标准差，让人一眼
+    看出这个数字有多可信，而不是误以为是精确值。"""
     bundle = load_rent_model()
     if not bundle:
         return "统计模型不可用"
     n = bundle.get("n_samples", "—")
     mape = bundle.get("mape_holdout")
-    mape_str = f"{mape:.2f}%" if isinstance(mape, (int, float)) else "—"
+    mape_std = bundle.get("mape_holdout_std")
+    if isinstance(mape, (int, float)):
+        mape_str = f"{mape:.2f}%"
+        if isinstance(mape_std, (int, float)):
+            mape_str += f"±{mape_std:.2f}%"
+    else:
+        mape_str = "—"
     return f"{n}个历史场地训练 · MAPE {mape_str}"
 
 
