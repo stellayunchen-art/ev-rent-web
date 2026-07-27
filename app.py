@@ -19,9 +19,13 @@ st.set_page_config(
 )
 
 # ── 全局样式 ──────────────────────────────────
-# 设计方向（2026-07-15）：克制留白风格——去渐变、去重阴影，改用细边框(1px hairline)+
-# 大留白+单一强调色，参考的是"少即是多"的现代SaaS工具（Linear/Notion一类），而不是
-# 常见的"企业蓝渐变卡片"套路。全站统一走 --app-* 这套变量，不再零散写十六进制色值。
+# 设计方向（2026-07-27，第三版）：参考苹果官网/发布会PPT的质感——用户对比apple.com
+# 截图后发现真正的差距不是"要不要边框"，而是三件具体的事：
+# 1. 卡片用柔和弥散阴影"托起来"，不是硬边框线（苹果的卡片边缘几乎看不到线）
+# 2. 圆角比常规SaaS更大（apple.com约18-24px，之前我们只有10px，显得"紧"）
+# 3. 关键数字/词语用彩色内嵌强调代替单独的图标+文字堆砌
+# 上一版（细边框+浅灰底）方向没错，这版是在此基础上把"边框"换成"阴影"、圆角放大，
+# 不是推倒重来。--app-*变量沿用，新增--app-shadow-*阴影token和更大的圆角档位。
 st.markdown("""
 <style>
 :root {
@@ -38,6 +42,9 @@ st.markdown("""
     --app-danger: #c1372f;
     --app-danger-soft: #fdecea;
     --app-radius: 10px;
+    --app-radius-lg: 18px;
+    --app-shadow-sm: 6px 6px 14px rgba(0,0,0,0.06);
+    --app-shadow-md: 8px 8px 16px rgba(0,0,0,0.08);
 }
 /* 页面本身用极浅灰底，白色卡片才能在上面显出"浮起来"的层次——
    之前卡片和页面背景同为纯白，只靠1px边框分隔，视觉上显得单薄。 */
@@ -48,12 +55,13 @@ section[data-testid="stSidebar"] { background: var(--app-bg); }
 html, body, [class*="css"] {
     font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", Arial, sans-serif;
 }
-/* 主标题横幅：白底细边框，不用渐变/阴影 */
+/* 主标题横幅：柔和阴影替代边框线，大圆角 */
 .hero-banner {
     background: var(--app-bg);
-    border: 1px solid var(--app-border);
-    border-radius: 14px;
-    padding: 20px 26px;
+    border: none;
+    box-shadow: var(--app-shadow-sm);
+    border-radius: var(--app-radius-lg);
+    padding: 22px 28px;
     margin-bottom: 6px;
     display: flex;
     align-items: center;
@@ -62,7 +70,7 @@ html, body, [class*="css"] {
 .hero-icon {
     width: 46px; height: 46px; flex-shrink: 0;
     background: var(--app-accent-soft);
-    border-radius: 12px;
+    border-radius: 14px;
     display: flex; align-items: center; justify-content: center;
     font-size: 22px;
 }
@@ -85,12 +93,13 @@ html, body, [class*="css"] {
     font-size: 0.76rem;
 }
 .hero-steps span.arrow { color: var(--app-text-muted); font-size: 0.8rem; }
-/* 指标卡片：去渐变，细边框 */
+/* 指标卡片：柔和阴影代替边框 */
 div[data-testid="stMetric"] {
     background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: var(--app-radius);
-    padding: 12px 16px;
+    border: none;
+    box-shadow: var(--app-shadow-sm);
+    border-radius: var(--app-radius-lg);
+    padding: 14px 18px;
 }
 div[data-testid="stMetric"] label { color: var(--app-text-secondary); }
 /* 报告分节卡片内的标题行 */
@@ -102,25 +111,73 @@ div[data-testid="stMetric"] label { color: var(--app-text-secondary); }
 }
 /* 表格圆角 */
 div[data-testid="stTable"] table { border-radius: var(--app-radius); overflow: hidden; }
-/* 按钮：细边框风格，去圆润阴影 */
+/* 按钮：柔和阴影替代边框 */
 .stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
     border-radius: var(--app-radius);
-    border: 1px solid var(--app-border-strong);
-    box-shadow: none;
+    border: none;
+    box-shadow: var(--app-shadow-sm);
 }
-/* 带边框容器（st.container(border=True)）：白底+细边框，在浅灰页面背景上"浮起来" */
+/* 带边框容器（st.container(border=True)）：白底+柔和阴影，大圆角，在浅灰页面背景上真正"浮起来" */
 div[data-testid="stVerticalBlockBorderWrapper"] {
-    margin-bottom: 16px;
+    margin-bottom: 20px;
     background: var(--app-bg) !important;
-    border-color: var(--app-border) !important;
-    border-radius: 12px !important;
-    box-shadow: none !important;
+    border: none !important;
+    border-radius: var(--app-radius-lg) !important;
+    box-shadow: var(--app-shadow-md) !important;
 }
-div[data-testid="stVerticalBlockBorderWrapper"] > div { padding: 4px 2px; }
-/* dataframe/表格同样给白底，避免和灰页面背景融在一起 */
-div[data-testid="stDataFrame"] { background: var(--app-bg); border-radius: var(--app-radius); overflow: hidden; }
+div[data-testid="stVerticalBlockBorderWrapper"] > div { padding: 6px 6px; }
+/* dataframe/表格同样给白底+柔和阴影，避免和灰页面背景融在一起 */
+div[data-testid="stDataFrame"] { background: var(--app-bg); border-radius: var(--app-radius); overflow: hidden; box-shadow: var(--app-shadow-sm); }
 /* iframe组件与下方内容留距 */
 iframe { margin-bottom: 4px; }
+
+/* ── 登录页专属（2026-07-27，参考account.apple.com真实截图）──
+   苹果登录/账户首页没有大卡片框把整块内容围起来——是巨大留白+居中大字标题
+   +几乎无边框的输入框+纯色圆角大按钮，下方功能说明用无边框浅灰色块承托。
+   之前登录页复用hero-banner（有阴影卡片框），和这个方向不符，改用独立样式。 */
+.login-hero { text-align: center; padding: 3rem 0 0.5rem; }
+.login-hero .login-icon {
+    width: 60px; height: 60px; margin: 0 auto 1.5rem;
+    background: linear-gradient(135deg, var(--app-accent), #3d5a80);
+    border-radius: 16px; display: flex; align-items: center; justify-content: center;
+    font-size: 28px; box-shadow: var(--app-shadow-md);
+}
+.login-hero h1 { font-size: 2rem; font-weight: 700; color: var(--app-text); margin: 0 0 0.6rem; letter-spacing: -0.02em; }
+.login-hero p { font-size: 1rem; color: var(--app-text-secondary); margin: 0 0 2.5rem; }
+div[data-testid="stForm"] {
+    background: transparent; border: none; box-shadow: none; padding: 0;
+}
+div[data-testid="stForm"] input {
+    background: var(--app-surface) !important;
+    border: 1px solid var(--app-border) !important;
+    border-radius: 12px !important;
+    padding: 0.75rem 1rem !important;
+    font-size: 0.95rem !important;
+}
+div[data-testid="stForm"] input:focus {
+    border-color: var(--app-accent) !important;
+    box-shadow: 0 0 0 3px var(--app-accent-soft) !important;
+}
+div[data-testid="stForm"] .stFormSubmitButton > button {
+    background: var(--app-accent) !important;
+    color: #fff !important;
+    border-radius: 999px !important;
+    padding: 0.65rem 0 !important;
+    font-weight: 600 !important;
+    font-size: 1rem !important;
+    box-shadow: none !important;
+    margin-top: 0.5rem;
+}
+div[data-testid="stForm"] .stFormSubmitButton > button:hover { opacity: 0.88; }
+.login-feature-card {
+    background: var(--app-surface);
+    border-radius: var(--app-radius-lg);
+    padding: 1.9rem 1.8rem;
+    height: 100%;
+}
+.login-feature-card svg { color: var(--app-accent); margin-bottom: 1rem; }
+.login-feature-card h3 { font-size: 1.1rem; font-weight: 700; margin: 0 0 0.55rem; color: var(--app-text); }
+.login-feature-card p { font-size: 0.87rem; color: var(--app-text-secondary); margin: 0; line-height: 1.65; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -131,20 +188,18 @@ iframe { margin-bottom: 4px; }
 USERS = st.secrets.get("users", {})
 if USERS and not st.session_state.get("auth_user"):
     st.markdown("""
-<div class="hero-banner" style="justify-content:center">
-  <div class="hero-icon">⚡</div>
-  <div>
-    <h1>换电站选址租金评估</h1>
-    <div class="hero-steps"><span class="step">🔒 内部系统 · 请登录后使用</span></div>
-  </div>
+<div class="login-hero">
+  <div class="login-icon">⚡</div>
+  <h1>换电站选址租金评估</h1>
+  <p>内部系统 · 请登录后使用</p>
 </div>
 """, unsafe_allow_html=True)
-    _, _mid, _ = st.columns([1, 2, 1])
+    _, _mid, _ = st.columns([1.2, 1, 1.2])
     with _mid:
         with st.form("login_form"):
-            _phone = st.text_input("📱 手机号", placeholder="请输入手机号")
-            _pwd   = st.text_input("🔑 密码", type="password", placeholder="请输入密码")
-            _login = st.form_submit_button("登 录", width="stretch", type="primary")
+            _phone = st.text_input("手机号", placeholder="请输入手机号")
+            _pwd   = st.text_input("密码", type="password", placeholder="请输入密码")
+            _login = st.form_submit_button("登录", width="stretch", type="primary")
         if _login:
             import hmac as _hmac
             _real = USERS.get(_phone.strip())
@@ -154,6 +209,25 @@ if USERS and not st.session_state.get("auth_user"):
             else:
                 st.error("手机号或密码错误。如需开通权限，请联系财务BP")
         st.caption("账号权限由财务BP统一管理")
+
+    st.markdown("<div style='height:3.5rem'></div>", unsafe_allow_html=True)
+    _c1, _c2 = st.columns(2, gap="medium")
+    with _c1:
+        st.markdown("""
+<div class="login-feature-card">
+  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
+  <h3>数据驱动的定价</h3>
+  <p>基于数百个历史场地训练的统计模型，自动计算目标租金、边界与谈判起点价，替代人工经验估算。</p>
+</div>
+""", unsafe_allow_html=True)
+    with _c2:
+        st.markdown("""
+<div class="login-feature-card">
+  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
+  <h3>AI辅助站点研判</h3>
+  <p>结合卫星地图与周边设施自动识别商圈类型、道路条件，将3-4小时的人工评估压缩至30-45分钟。</p>
+</div>
+""", unsafe_allow_html=True)
     st.stop()
 
 if USERS:
@@ -1067,18 +1141,18 @@ def render_price_range(price_range):
     conservative, neutral, aggressive = price_range
     st.markdown(
         f"""
-<div style="display:flex;gap:10px;margin-bottom:6px">
-  <div style="flex:1;background:var(--app-surface);border:1px solid var(--app-border);border-radius:10px;padding:10px 14px;text-align:center">
+<div style="display:flex;gap:12px;margin-bottom:6px">
+  <div style="flex:1;background:var(--app-surface);border-radius:var(--app-radius);box-shadow:var(--app-shadow-sm);padding:12px 14px;text-align:center">
     <div style="font-size:0.78rem;color:var(--app-text-muted)">保守</div>
-    <div style="font-size:1.2rem;font-weight:600;color:var(--app-text)">¥{conservative:.0f}</div>
+    <div style="font-size:1.3rem;font-weight:600;color:var(--app-text)">¥{conservative:.0f}</div>
   </div>
-  <div style="flex:1;background:var(--app-accent-soft);border:1px solid var(--app-border);border-radius:10px;padding:10px 14px;text-align:center">
+  <div style="flex:1;background:var(--app-bg);border-radius:var(--app-radius);box-shadow:var(--app-shadow-sm);padding:12px 14px;text-align:center">
     <div style="font-size:0.78rem;color:var(--app-accent)">中性</div>
-    <div style="font-size:1.2rem;font-weight:700;color:var(--app-accent)">¥{neutral:.0f}</div>
+    <div style="font-size:1.3rem;font-weight:700;color:var(--app-accent)">¥{neutral:.0f}</div>
   </div>
-  <div style="flex:1;background:var(--app-surface);border:1px solid var(--app-border);border-radius:10px;padding:10px 14px;text-align:center">
+  <div style="flex:1;background:var(--app-surface);border-radius:var(--app-radius);box-shadow:var(--app-shadow-sm);padding:12px 14px;text-align:center">
     <div style="font-size:0.78rem;color:var(--app-text-muted)">进取</div>
-    <div style="font-size:1.2rem;font-weight:600;color:var(--app-text)">¥{aggressive:.0f}</div>
+    <div style="font-size:1.3rem;font-weight:600;color:var(--app-text)">¥{aggressive:.0f}</div>
   </div>
 </div>
 """,
@@ -1828,41 +1902,37 @@ def compute_price_numbers(result, city, district):
 
 
 def render_price_hero(nums, show_boundary=True, show_footer=True):
-    """价格主卡：谈判起点 / 建议目标（居中放大深色块）/ 边界上限 + 标准范围 + 数据来源。
-    show_boundary=False 隐藏"边界上限"卡（商务同事视图不给看边界，防止对外泄露定价上限）；
+    """价格主卡：谈判起点 / 建议目标（超大字号居中）/ 边界上限 + 标准范围 + 数据来源。
+    2026-07-27改为苹果官网风格：柔和阴影替代边框、大圆角、目标价用巨大字号做视觉主角
+    （不再靠深色实心块强调，字号本身的对比就是层次），用户对比apple.com截图后确认的方向。
+    show_boundary=False 隐藏"边界上限"（商务同事视图不给看边界，防止对外泄露定价上限）；
     show_footer=False 隐藏底部"行政区标准范围 + 模型来源"那行（同样对商务同事隐藏）。"""
     _t = nums["target"] or "—"
     _o = nums["opening"] or "—"
     _b = nums["boundary"] or "—"
-    _boundary_card = (
-        f"""    <div style="background:var(--app-bg);border:1px solid var(--app-border);border-radius:12px;padding:12px 22px">
-      <div style="font-size:0.8rem;color:var(--app-text-muted)">💰 边界上限</div>
-      <div style="font-size:1.6rem;font-weight:600;line-height:1.3;color:var(--app-text)">¥{_b}</div>
-    </div>"""
-        if show_boundary else ""
-    )
+    _side_stats = f"""    <div><p style="font-size:12px;color:var(--app-text-muted);margin:0 0 0.3rem;letter-spacing:0.02em">谈判起点</p>
+      <p style="font-size:26px;font-weight:600;color:var(--app-text);margin:0">¥{_o}</p></div>"""
+    if show_boundary:
+        _side_stats += f"""
+    <div style="width:0.5px;background:var(--app-border-strong)"></div>
+    <div><p style="font-size:12px;color:var(--app-text-muted);margin:0 0 0.3rem;letter-spacing:0.02em">边界上限</p>
+      <p style="font-size:26px;font-weight:600;color:var(--app-text);margin:0">¥{_b}</p></div>"""
     _footer = (
-        f"""  <div style="margin-top:16px;padding-top:10px;border-top:1px solid var(--app-border-strong);
+        f"""  <p style="margin-top:1.75rem;padding-top:1rem;border-top:0.5px solid var(--app-border);
        font-size:0.8rem;color:var(--app-text-muted)">
-    🏛️ 行政区租金标准 {nums['range_str']} 元/车位/月　·　📈 {nums['src_note']}
-  </div>"""
+    行政区租金标准 {nums['range_str']} 元/车位/月　·　{nums['src_note']}
+  </p>"""
         if show_footer else ""
     )
     st.markdown(
         f"""
-<div style="background:var(--app-accent-soft);border:1px solid var(--app-border);
-     border-radius:14px;padding:22px 24px 14px;text-align:center;margin-bottom:10px">
-  <div style="font-size:0.9rem;color:var(--app-text-secondary);margin-bottom:16px">综合建议租金（首年价，元/车位/月）</div>
-  <div style="display:flex;justify-content:center;align-items:center;gap:24px">
-    <div style="background:var(--app-bg);border:1px solid var(--app-border);border-radius:12px;padding:12px 22px">
-      <div style="font-size:0.8rem;color:var(--app-text-muted)">🤝 谈判起点</div>
-      <div style="font-size:1.6rem;font-weight:600;line-height:1.3;color:var(--app-text)">¥{_o}</div>
-    </div>
-    <div style="background:var(--app-accent);border-radius:14px;padding:14px 32px">
-      <div style="font-size:0.85rem;color:#c9d8ea;font-weight:600">🎯 建议目标</div>
-      <div style="font-size:2.6rem;font-weight:700;line-height:1.15;letter-spacing:0.3px;color:#ffffff">¥{_t}</div>
-    </div>
-{_boundary_card}
+<div style="background:var(--app-bg);border-radius:var(--app-radius-lg);box-shadow:var(--app-shadow-md);
+     padding:2.25rem 2rem 1.75rem;text-align:center;margin-bottom:10px">
+  <p style="font-size:14px;color:var(--app-text-muted);margin:0 0 1.75rem">综合建议租金 · 首年价</p>
+  <div style="font-size:64px;font-weight:600;line-height:1;letter-spacing:-0.02em;color:var(--app-accent);margin-bottom:0.5rem">¥{_t}</div>
+  <p style="font-size:14px;color:var(--app-text-secondary);margin:0 0 2rem">建议目标 · 元/车位/月</p>
+  <div style="display:flex;justify-content:center;align-items:center;gap:2.25rem">
+{_side_stats}
   </div>
 {_footer}
 </div>
@@ -1902,8 +1972,8 @@ def render_location_card(result, coord):
             _right = f"{_rd_first}，{_rd_val}" if _rd_first else _rd_val
             _feat = " · ".join(x for x in (_left, _right) if x)
             st.markdown(
-                f"<div style='background:var(--app-accent-soft);border:1px solid var(--app-border);border-radius:10px;"
-                f"padding:9px 16px;color:var(--app-accent);font-size:0.95rem;font-weight:600;"
+                f"<div style='background:var(--app-accent-soft);border-radius:var(--app-radius);"
+                f"padding:10px 16px;color:var(--app-accent);font-size:0.95rem;font-weight:600;"
                 f"margin-bottom:12px'>{_feat}</div>",
                 unsafe_allow_html=True,
             )
@@ -2123,8 +2193,9 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
                         _dm = _first_dist_re.search(_items[0])
                         _near = f"最近 {_dm.group(1)}m" if _dm else ""
                     _chips_srv += (
-                        f"<div style='background:#ffffff;border:1px solid #e6e8ec;border-radius:10px;"
-                        f"padding:12px 8px 10px;text-align:center'>"
+                        f"<div style='background:#ffffff;border-radius:16px;"
+                        f"box-shadow:0 2px 16px rgba(0,0,0,0.05),0 1px 2px rgba(0,0,0,0.03);"
+                        f"padding:14px 8px 12px;text-align:center'>"
                         f"<div style='color:#6b7280;font-size:12px;letter-spacing:1px'>{_lbl}</div>"
                         f"<div style='font-size:1.5rem;font-weight:600;color:#1f3a5f;line-height:1.4'>{len(_items)}"
                         f"<span style='font-size:0.8rem;font-weight:400;color:#9aa0ab'> 个</span></div>"
@@ -2135,8 +2206,9 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
                 _browser_cats_html = ""
                 for _i, (_emoji_lbl,) in enumerate([("🏘️ 住宅小区",), ("🏢 写字楼",), ("🏫 中小学",), ("🏥 医院",), ("🌳 公园广场",)]):
                     _browser_cats_html += (
-                        f"<div style='background:#ffffff;border:1px solid #e6e8ec;border-radius:10px;"
-                        f"padding:12px 8px 10px;text-align:center'>"
+                        f"<div style='background:#ffffff;border-radius:16px;"
+                        f"box-shadow:0 2px 16px rgba(0,0,0,0.05),0 1px 2px rgba(0,0,0,0.03);"
+                        f"padding:14px 8px 12px;text-align:center'>"
                         f"<div style='color:#6b7280;font-size:12px;letter-spacing:1px'>{_emoji_lbl}</div>"
                         f"<div id='cnt{_i}' style='font-size:1.5rem;font-weight:600;color:#1f3a5f;line-height:1.4'>…</div>"
                         f"<div id='near{_i}' style='color:#9aa0ab;font-size:11px'>&nbsp;</div></div>"
