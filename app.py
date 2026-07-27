@@ -487,6 +487,106 @@ def load_district_rent_history(city: str, district: str) -> pd.DataFrame:
     return df[["audit_date", "unit_rent", "name"]].sort_values("audit_date")
 
 
+# ── 回测校准（2026-07-26新增）：向老板证明模型可信度的证据，不是黑箱吐数字 ──
+_BT_CATEGORICAL = ["city_district"]
+_BT_NUMERIC = ["transit_count", "industrial_count", "mall_count", "audit_num",
+               "hub_highway", "hub_railway", "hub_coach", "hub_airport"]
+
+
+def _bt_audit_to_num(date_str):
+    """必须和train_rent_model.py的audit_to_num()算法完全一致，否则回测口径就和
+    训练时不一样了。"""
+    m = re.match(r"(\d{4})-(\d{2})", str(date_str or ""))
+    if not m:
+        return None
+    year, month = int(m.group(1)), int(m.group(2))
+    return year + (month - 1) / 12
+
+
+@st.cache_data(show_spinner="正在跑5折交叉验证回测（约需10-20秒）…", ttl=3600)
+def run_backtest():
+    """对576个历史场地做5折交叉验证的样本外预测（out-of-fold）：每个站点被预测时，
+    用的都是不包含它自己的那4折训练出来的模型，避免"用自己训练自己"这种自欺欺人的
+    评估方式。返回逐站点的(实际成交价, 模型会预测多少, 误差%)，用于画散点图+误差分布，
+    是比单个MAPE数字更直观的"这个模型到底准不准"的证据。"""
+    from sklearn.compose import ColumnTransformer
+    from sklearn.linear_model import RidgeCV
+    from sklearn.model_selection import KFold
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+    if not FEATURES_CSV.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(FEATURES_CSV, encoding="utf-8-sig")
+    df = df.dropna(subset=["unit_rent"])
+    df = df[df["unit_rent"] > 0]
+    df["city_district"] = df["city"].astype(str) + "-" + df["district"].astype(str)
+    df["audit_num"] = df["audit_date"].apply(_bt_audit_to_num)
+    df = df.dropna(subset=["audit_num"]).reset_index(drop=True)
+
+    X = df[_BT_CATEGORICAL + _BT_NUMERIC]
+    y_log = np.log(df["unit_rent"].values)
+    y_true = df["unit_rent"].values
+
+    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    pred = np.zeros(len(df))
+    for tr_idx, te_idx in kf.split(X):
+        pre = ColumnTransformer([
+            ("cat", OneHotEncoder(handle_unknown="ignore"), _BT_CATEGORICAL),
+            ("num", StandardScaler(), _BT_NUMERIC),
+        ])
+        pipe = Pipeline([("pre", pre), ("ridge", RidgeCV(alphas=np.logspace(-2, 3, 40)))])
+        pipe.fit(X.iloc[tr_idx], y_log[tr_idx])
+        pred[te_idx] = np.exp(pipe.predict(X.iloc[te_idx]))
+
+    result = df[["name", "city", "district", "audit_date"]].copy()
+    result["实际成交价"] = y_true.round(0)
+    result["模型预测价"] = pred.round(0)
+    result["误差%"] = ((pred - y_true) / y_true * 100).round(1)
+    return result
+
+
+def render_backtest_page():
+    """回测校准页面：预测vs实际散点图 + 误差分布，向老板证明模型可信度的直观证据。"""
+    bt = run_backtest()
+    if bt.empty:
+        st.info("暂无历史训练数据，无法回测")
+        return
+
+    st.markdown("##### 📐 模型回测校准")
+    st.caption(
+        "对576个历史场地做5折交叉验证样本外预测——每个站点被预测时，模型完全没见过它，"
+        "更接近真实的「新站点评估」场景，不是用自己训练自己的自欺欺人评估。"
+    )
+
+    n = len(bt)
+    within_10 = (bt["误差%"].abs() <= 10).sum()
+    within_20 = (bt["误差%"].abs() <= 20).sum()
+    mape_val = bt["误差%"].abs().mean()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("样本数", f"{n}")
+    c2.metric("平均绝对误差", f"{mape_val:.1f}%")
+    c3.metric("误差≤10%占比", f"{within_10/n*100:.0f}%")
+    c4.metric("误差≤20%占比", f"{within_20/n*100:.0f}%")
+
+    import altair as alt
+    max_v = max(bt["实际成交价"].max(), bt["模型预测价"].max()) * 1.05
+    scatter = alt.Chart(bt).mark_circle(size=50, opacity=0.5, color="#1f3a5f").encode(
+        x=alt.X("实际成交价:Q", title="实际成交价（元/月）", scale=alt.Scale(domain=[0, max_v])),
+        y=alt.Y("模型预测价:Q", title="模型预测价（元/月）", scale=alt.Scale(domain=[0, max_v])),
+        tooltip=["name:N", "city:N", "district:N", "实际成交价:Q", "模型预测价:Q", "误差%:Q"],
+    )
+    diagonal = alt.Chart(pd.DataFrame({"x": [0, max_v], "y": [0, max_v]})).mark_line(
+        color="#c1372f", strokeDash=[5, 5]
+    ).encode(x="x:Q", y="y:Q")
+    st.altair_chart((scatter + diagonal).properties(height=380), use_container_width=True)
+    st.caption("红色虚线=完美预测（预测值=实际值）；点越贴近虚线，模型越准。散点整体分布反映的是真实预测能力，不是挑好看的案例展示")
+
+    with st.expander("查看误差最大的10个站点（供排查数据质量或模型盲区）"):
+        worst = bt.reindex(bt["误差%"].abs().sort_values(ascending=False).index).head(10)
+        st.dataframe(worst, hide_index=True, width="stretch")
+
+
 def geocode(address: str):
     """
     输入完整地址，返回 (coord, city, district)。
@@ -1277,7 +1377,7 @@ if not COZE_TOKEN:
 
 # ── 输入表单（侧边栏：左侧输入、右侧展示，减少上下滚动）──
 with st.sidebar:
-    eval_mode = st.radio("评估模式", ["单站评估", "批量评估"], horizontal=True, label_visibility="collapsed")
+    eval_mode = st.radio("评估模式", ["单站评估", "批量评估", "模型回测"], horizontal=True, label_visibility="collapsed")
     submitted = False
     batch_submitted = False
     f_name = f_addr = f_coord = ""
@@ -1302,7 +1402,7 @@ with st.sidebar:
                 help="高德定位不准时手动填入。从钉图易点击站点位置获取坐标，格式：经度,纬度（中英文逗号均可）。填入后将覆盖高德自动定位。",
             )
             submitted = st.form_submit_button("🚀 开始评估", width="stretch", type="primary")
-    else:
+    elif eval_mode == "批量评估":
         st.markdown("### 📦 批量站点输入")
         with st.form("batch_form"):
             batch_text = st.text_area(
@@ -1313,6 +1413,9 @@ with st.sidebar:
             )
             batch_submitted = st.form_submit_button("🚀 开始批量评估", width="stretch", type="primary")
         st.caption("批量模式跳过Coze视觉分析和AI报告，只输出统计模型算的三个价格，适合快速初筛多个候选点")
+    else:
+        st.markdown("### 📐 模型回测")
+        st.caption("对576个历史场地做5折交叉验证样本外预测，看模型预测vs实际成交的吻合程度——不需要输入，切到这个模式直接看右侧结果")
     st.caption(f"📊 统计模型：{model_stats_note()}")
 
 # ── Session State 初始化 ──────────────────────
@@ -1540,6 +1643,11 @@ if eval_mode == "批量评估" and st.session_state.batch_results:
         mime="text/csv",
     )
     st.caption("以上仅为统计模型算的三个价格，未经AI视觉分析和报告生成；如需完整报告请切换到「单站评估」逐个跑")
+
+# ── 模型回测页面 ──────────────────────────────
+if eval_mode == "模型回测":
+    st.divider()
+    render_backtest_page()
 
 # ── 财务BP视图 / 商务同事视图 共用的渲染组件 ───────────────
 # 抽成函数，让两个视图都能复用同一套站点头/价格卡/周边定位卡，改一处两处都变，不再各写一份。
