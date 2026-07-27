@@ -171,6 +171,10 @@ if USERS:
 AMAP_KEY         = st.secrets.get("AMAP_KEY",         "ce2119b87985d25e49cff4c05c6938ff")
 COZE_TOKEN       = st.secrets.get("COZE_TOKEN",       "")
 COZE_WORKFLOW_ID = st.secrets.get("COZE_WORKFLOW_ID", "7642236438868312079")
+# 评估历史台账（2026-07-26新增）：GitHub PAT需要"Contents: Read and write"权限，
+# 建议用fine-grained token只授权ev-rent-web这一个仓库。未配置时台账功能静默跳过，不影响主流程。
+GITHUB_TOKEN     = st.secrets.get("GITHUB_TOKEN",     "")
+GITHUB_REPO      = st.secrets.get("GITHUB_REPO",      "stellayunchen-art/ev-rent-web")
 
 HIGHWAY_KEYWORDS = ["高速", "服务区", "收费站"]
 BENCH_CSV = Path(__file__).parent / "benchmarks.csv"
@@ -1350,6 +1354,69 @@ def run_batch_prediction(name: str, address: str) -> dict:
     return row
 
 
+# ── 评估历史台账（2026-07-26新增）────────────────────
+# Streamlit Community Cloud的文件系统是临时的，重启/重新部署会清空本地写入，
+# 不能像本地脚本那样简单追加CSV。改用GitHub Contents API直接读写仓库里的
+# eval_history.csv——复用项目里benchmarks.csv/rent_standard.csv那套"改CSV→git commit→
+# Streamlit Cloud自动拉取"的既有模式，不引入新的外部服务/依赖。
+EVAL_HISTORY_PATH = "eval_history.csv"  # 仓库根目录（即coze网页版/目录）下的路径
+EVAL_HISTORY_FIELDS = [
+    "timestamp", "name", "city", "district", "address", "coord",
+    "target", "boundary", "opening",
+    "price_conservative", "price_neutral", "price_aggressive", "confidence",
+]
+
+
+def log_evaluation_to_github(record: dict):
+    """把一条评估记录追加写入GitHub仓库里的eval_history.csv并提交。
+    ⚠️ 失败（未配置Token/网络问题/并发冲突）时静默跳过，绝不能因为记台账失败
+    影响主评估流程——这是锦上添花的功能，不是关键路径。"""
+    if not GITHUB_TOKEN:
+        return False, "未配置GITHUB_TOKEN，跳过台账记录"
+    import base64
+    import csv
+    import io
+
+    api_base = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{EVAL_HISTORY_PATH}"
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+    }
+    try:
+        r = requests.get(api_base, headers=headers, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            sha = data["sha"]
+            existing = base64.b64decode(data["content"]).decode("utf-8-sig")
+        elif r.status_code == 404:
+            sha = None
+            existing = ""
+        else:
+            return False, f"读取eval_history.csv失败：HTTP {r.status_code}"
+
+        buf = io.StringIO()
+        buf.write(existing)  # 文件不存在时existing=""，什么都不写
+        if not existing.strip():
+            csv.DictWriter(buf, fieldnames=EVAL_HISTORY_FIELDS).writeheader()
+        elif not existing.endswith("\n"):
+            buf.write("\n")  # 确保上次内容结尾有换行，避免新行和上一行粘在一起
+        csv.DictWriter(buf, fieldnames=EVAL_HISTORY_FIELDS).writerow(record)
+        new_content = buf.getvalue()
+
+        payload = {
+            "message": f"log evaluation: {record.get('name', '')}",
+            "content": base64.b64encode(new_content.encode("utf-8")).decode("ascii"),
+        }
+        if sha:
+            payload["sha"] = sha
+        r2 = requests.put(api_base, headers=headers, json=payload, timeout=10)
+        if r2.status_code in (200, 201):
+            return True, "已记录"
+        return False, f"写入失败：HTTP {r2.status_code} {r2.text[:200]}"
+    except Exception as e:
+        return False, f"台账记录异常：{e}"
+
+
 # ═══════════════════════════════════════════════
 #  页面主体
 # ═══════════════════════════════════════════════
@@ -1412,7 +1479,11 @@ with st.sidebar:
                 help="快速拿到一批候选点的目标价/边界/起点价，仅跑统计模型，不生成AI报告和地图分析（速度快很多）",
             )
             batch_submitted = st.form_submit_button("🚀 开始批量评估", width="stretch", type="primary")
-        st.caption("批量模式跳过Coze视觉分析和AI报告，只输出统计模型算的三个价格，适合快速初筛多个候选点")
+        st.caption(
+            "⚠️ 价格数字不受影响：目标价/边界/起点价本来就是统计模型算的，和AI视觉分析无关。"
+            "批量模式只是跳过「AI看地图写商圈说明文字」这一步（这步慢，1-2分钟一个站），"
+            "适合快速初筛多个候选点；需要完整文字报告时切回单站评估逐个跑"
+        )
     else:
         st.markdown("### 📐 模型回测")
         st.caption("对576个历史场地做5折交叉验证样本外预测，看模型预测vs实际成交的吻合程度——不需要输入，切到这个模式直接看右侧结果")
@@ -1600,6 +1671,20 @@ if submitted:
             st.write("  ⚠️ 流式接口不可用，切换为普通模式（通常需要 30–90 秒）…")
             result = call_workflow(f_name, city, district, f_addr, coord, benchmark_info)
         stream_placeholder.empty()
+
+        # Step 4：记台账（失败不影响评估结果，只是锦上添花，见log_evaluation_to_github注释）
+        if model_target:
+            from datetime import datetime as _dt
+            _ok, _msg = log_evaluation_to_github({
+                "timestamp": _dt.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "name": f_name, "city": city, "district": district,
+                "address": f_addr, "coord": coord,
+                "target": round(model_target), "boundary": model_boundary, "opening": round(model_opening),
+                "price_conservative": price_conservative or "", "price_neutral": price_neutral or "",
+                "price_aggressive": price_aggressive or "", "confidence": conf_level,
+            })
+            st.write(f"📒 评估台账：{_msg}")
+
         # 完成后折叠过程日志（可点开审计），页面直接呈现结果
         status_box.update(label="✅ 评估完成（点击展开查看评估过程日志）", state="complete", expanded=False)
 
@@ -1642,7 +1727,7 @@ if eval_mode == "批量评估" and st.session_state.batch_results:
         file_name="批量租金评估结果.csv",
         mime="text/csv",
     )
-    st.caption("以上仅为统计模型算的三个价格，未经AI视觉分析和报告生成；如需完整报告请切换到「单站评估」逐个跑")
+    st.caption("以上价格数字和单站评估同源、同样可信（都是统计模型算的，不依赖AI视觉分析）；缺的只是AI写的商圈说明文字和地图分析，需要完整文字报告时切回「单站评估」逐个跑")
 
 # ── 模型回测页面 ──────────────────────────────
 if eval_mode == "模型回测":
