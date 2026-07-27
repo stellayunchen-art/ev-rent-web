@@ -169,6 +169,70 @@ div[data-testid="stForm"] .stFormSubmitButton > button {
     margin-top: 0.5rem;
 }
 div[data-testid="stForm"] .stFormSubmitButton > button:hover { opacity: 0.88; }
+div[data-testid="stForm"] textarea {
+    background: var(--app-surface) !important;
+    border: 1px solid var(--app-border) !important;
+    border-radius: 12px !important;
+    font-size: 0.9rem !important;
+}
+div[data-testid="stForm"] textarea:focus {
+    border-color: var(--app-accent) !important;
+    box-shadow: 0 0 0 3px var(--app-accent-soft) !important;
+}
+
+/* ── 侧边栏"评估模式"选择器：参考苹果配置页的分段选择控件（如MacBook Neo购买页的
+   Storage/Payment options卡片）——用纯色块+选中态强调色代替原生单选圆点，2026-07-27 ── */
+section[data-testid="stSidebar"] div[data-testid="stRadio"] [role="radiogroup"] {
+    display: flex;
+    flex-wrap: nowrap;    /* Streamlit默认给radiogroup设了flex-wrap:wrap，3个选项在窄侧边栏里会
+                              各自换行变成竖排列表——nowrap+下面label的flex:1让三个选项强制等分
+                              一行宽度，而不是按内容宽度自然换行 */
+    gap: 4px;
+    background: var(--app-surface);
+    padding: 4px;
+    border-radius: 999px;
+    width: 100%;
+}
+section[data-testid="stSidebar"] div[data-testid="stRadio"] label[data-baseweb="radio"] {
+    flex: 1 1 0;
+    min-width: 0;
+    justify-content: center;
+    margin: 0 !important;
+    border-radius: 999px;
+    padding: 6px 4px;
+    cursor: pointer;
+    transition: background .15s;
+}
+/* 原生radio圆点是苹果配置页里没有的元素。实测DOM结构（用JS遍历label.children确认，
+   之前用文本缩进猜的嵌套关系是错的）：label的三个直接子节点依次是 [圆点div, input, 文字div]——
+   input在中间，不在两个div外面。用:has(+ input)选中"后面紧跟着input"的那个div，
+   精确定位到圆点div（不影响<label>原生点击转发：label→input关联基于DOM包含关系）*/
+section[data-testid="stSidebar"] div[data-testid="stRadio"] label[data-baseweb="radio"] div:has(+ input) {
+    display: none;
+}
+section[data-testid="stSidebar"] div[data-testid="stRadio"] label[data-baseweb="radio"] p {
+    margin: 0;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--app-text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+section[data-testid="stSidebar"] div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) {
+    background: var(--app-accent);
+}
+section[data-testid="stSidebar"] div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) p {
+    color: #fff;
+    font-weight: 600;
+}
+/* 侧边栏分节标题：粗体主词+灰色说明的苹果配置页样式（"Payment options. Select the one..."）*/
+section[data-testid="stSidebar"] h3 {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--app-text);
+    margin: 1.4rem 0 0.9rem;
+}
 .login-feature-card {
     background: var(--app-surface);
     border-radius: var(--app-radius-lg);
@@ -203,7 +267,10 @@ if USERS and not st.session_state.get("auth_user"):
         if _login:
             import hmac as _hmac
             _real = USERS.get(_phone.strip())
-            if _real and _hmac.compare_digest(str(_real), _pwd):
+            # hmac.compare_digest()不支持含中文等非ASCII字符的字符串（直接抛TypeError，
+            # 密码含中文时登录页会崩溃）——Secrets里的密码占位符本身就是中文，编码成UTF-8
+            # bytes后比较，两种情况都能处理。
+            if _real and _hmac.compare_digest(str(_real).encode("utf-8"), _pwd.encode("utf-8")):
                 st.session_state.auth_user = _phone.strip()
                 st.rerun()
             else:
@@ -573,12 +640,25 @@ _BT_NUMERIC = ["transit_count", "industrial_count", "mall_count", "audit_num",
 
 def _bt_audit_to_num(date_str):
     """必须和train_rent_model.py的audit_to_num()算法完全一致，否则回测口径就和
-    训练时不一样了。"""
-    m = re.match(r"(\d{4})-(\d{2})", str(date_str or ""))
-    if not m:
+    训练时不一样了。⚠️ 2026-07-27修复：原来只认标准"2026-07"格式，没有同步
+    train_rent_model.py后来为"暂缓"站点加的三档兜底（斜杠日期/纯年份），导致这22个
+    2026-07-26当天专门补录扩充训练集的站点在回测里被静默跳过——明明参与了训练，
+    回测页面却显示"没有数据"，侧边栏615个 vs 回测593个的差距就是这么来的。"""
+    s = str(date_str or "").strip()
+    if not s:
         return None
-    year, month = int(m.group(1)), int(m.group(2))
-    return year + (month - 1) / 12
+    m = re.search(r"(\d{4})-(\d{1,2})", s)
+    if m:
+        year, month = int(m.group(1)), int(m.group(2))
+        return year + (month - 1) / 12
+    m = re.search(r"(\d{4})/(\d{1,2})/(\d{1,2})", s)
+    if m:
+        year, month = int(m.group(1)), int(m.group(2))
+        return year + (month - 1) / 12
+    m = re.search(r"(?<!\d)(20\d{2})(?!\d)", s)
+    if m:
+        return int(m.group(1)) + 0.5
+    return None
 
 
 @st.cache_data(show_spinner="正在跑5折交叉验证回测（约需10-20秒）…", ttl=3600)
@@ -631,13 +711,13 @@ def render_backtest_page():
         st.info("暂无历史训练数据，无法回测")
         return
 
+    n = len(bt)
     st.markdown("##### 📐 模型回测校准")
     st.caption(
-        "对576个历史场地做5折交叉验证样本外预测——每个站点被预测时，模型完全没见过它，"
+        f"对{n}个历史场地做5折交叉验证样本外预测——每个站点被预测时，模型完全没见过它，"
         "更接近真实的「新站点评估」场景，不是用自己训练自己的自欺欺人评估。"
     )
 
-    n = len(bt)
     within_10 = (bt["误差%"].abs() <= 10).sum()
     within_20 = (bt["误差%"].abs() <= 20).sum()
     mape_val = bt["误差%"].abs().mean()
@@ -2180,38 +2260,53 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
         with _facility_col:
             # ── 周边设施统计（紧凑横向条：3类服务器端 + 住宅小区浏览器端）──
             if any(_pois.values()) or coord:
+                # 卡片文案（2026-07-27改为"图标+加粗彩色数字内嵌句子"，参考苹果风格价格卡下方
+                # 的信息条——比原来"标签/大数字/最近距离"三段式更像一句话，具体最近距离仍完整
+                # 保留在下方明细里，不丢信息，只是摘要层面更简洁；⚠️此处在components.html()的
+                # 独立iframe里渲染，CSS变量不生效，颜色值须硬编码，与--app-shadow-sm/--app-radius-lg
+                # 的实测数值（8px 8px 16px rgba(0,0,0,.08) / 18px）保持一致）
+                _CHIP_STYLE = (
+                    "background:#ffffff;border-radius:18px;"
+                    "box-shadow:8px 8px 16px rgba(0,0,0,0.08);"
+                    "padding:16px 14px;text-align:left"
+                )
+                _SRV_META = {
+                    "🏭 工业园/产业园": ("🏭", "周边有 {n} 个工业园/产业园", "#2563eb"),
+                    "🏬 大型商业设施": ("🏬", "{n} 家商业设施覆盖周边", "#16a34a"),
+                }
                 _chips_srv = ""
                 _details_srv = ""
                 _first_dist_re = re.compile(r"（(\d+)m")
                 for _lbl, _text in _pois.items():
-                    if _lbl == "🚉 交通枢纽":
+                    if _lbl == "🚉 交通枢纽" or _lbl not in _SRV_META:
                         continue  # 交通枢纽已合并进下方"交通与充电枢纽"面板，此处不重复展示
                     _items = _poi_items(_text)
-                    # 最近距离（明细第一条括号里的距离）
-                    _near = ""
-                    if _items:
-                        _dm = _first_dist_re.search(_items[0])
-                        _near = f"最近 {_dm.group(1)}m" if _dm else ""
+                    _emoji, _tmpl, _color = _SRV_META[_lbl]
+                    _n = f"<b style='color:{_color};font-size:1.1em'>{len(_items)}</b>"
                     _chips_srv += (
-                        f"<div style='background:#ffffff;border-radius:16px;"
-                        f"box-shadow:0 2px 16px rgba(0,0,0,0.05),0 1px 2px rgba(0,0,0,0.03);"
-                        f"padding:14px 8px 12px;text-align:center'>"
-                        f"<div style='color:#6b7280;font-size:12px;letter-spacing:1px'>{_lbl}</div>"
-                        f"<div style='font-size:1.5rem;font-weight:600;color:#1f3a5f;line-height:1.4'>{len(_items)}"
-                        f"<span style='font-size:0.8rem;font-weight:400;color:#9aa0ab'> 个</span></div>"
-                        f"<div style='color:#9aa0ab;font-size:11px'>{_near or '&nbsp;'}</div></div>"
+                        f"<div style='{_CHIP_STYLE}'>"
+                        f"<div style='font-size:20px;margin-bottom:8px'>{_emoji}</div>"
+                        f"<div style='font-size:0.85rem;color:#3d4451;line-height:1.5'>{_tmpl.format(n=_n)}</div>"
+                        f"</div>"
                     )
                     _details_srv += f"<b>{_lbl}</b>：{'、'.join(_items) if _items else '2km内未检索到'}<br>"
                 # 浏览器端补充统计的类别（仿领导工具的"环境构成"，但仅做展示参考，不参与区域类型判断）
+                # 每格文案拆成前缀+后缀，中间夹一个<b id="cntN">占位符，JS只需填数字，不用拼整句
+                _BROWSER_CATS = [
+                    ("🏘️", "周边有 ", " 个住宅小区", "#d97706"),
+                    ("🏢", "周边有 ", " 栋写字楼", "#7c3aed"),
+                    ("🏫", "周边有 ", " 所中小学", "#0891b2"),
+                    ("🏥", "周边有 ", " 家医院", "#dc2626"),
+                    ("🌳", "周边有 ", " 处公园广场", "#059669"),
+                ]
                 _browser_cats_html = ""
-                for _i, (_emoji_lbl,) in enumerate([("🏘️ 住宅小区",), ("🏢 写字楼",), ("🏫 中小学",), ("🏥 医院",), ("🌳 公园广场",)]):
+                for _i, (_emoji, _pre, _suf, _color) in enumerate(_BROWSER_CATS):
                     _browser_cats_html += (
-                        f"<div style='background:#ffffff;border-radius:16px;"
-                        f"box-shadow:0 2px 16px rgba(0,0,0,0.05),0 1px 2px rgba(0,0,0,0.03);"
-                        f"padding:14px 8px 12px;text-align:center'>"
-                        f"<div style='color:#6b7280;font-size:12px;letter-spacing:1px'>{_emoji_lbl}</div>"
-                        f"<div id='cnt{_i}' style='font-size:1.5rem;font-weight:600;color:#1f3a5f;line-height:1.4'>…</div>"
-                        f"<div id='near{_i}' style='color:#9aa0ab;font-size:11px'>&nbsp;</div></div>"
+                        f"<div style='{_CHIP_STYLE}'>"
+                        f"<div style='font-size:20px;margin-bottom:8px'>{_emoji}</div>"
+                        f"<div style='font-size:0.85rem;color:#3d4451;line-height:1.5'>{_pre}"
+                        f"<b id='cnt{_i}' style='color:{_color};font-size:1.1em'>…</b>{_suf}</div>"
+                        f"</div>"
                     )
                 _strip_html = f"""
     <div style="font-family:-apple-system,'PingFang SC','Source Sans Pro',sans-serif">
@@ -2229,7 +2324,7 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
     const KEY = "{AMAP_KEY}";
     const coord = "{coord}";
     // 浏览器端统计类别（国内网络直连高德，绕过海外服务器限制）
-    // count字段=2km内总数；nearest取距离排序第一条
+    // count字段=2km内总数；wantDetail=true时额外拉住宅小区明细清单
     const CATS = [
       ["120302", 0, true],            // 住宅小区（额外拉明细清单）
       ["120201", 1, false],           // 写字楼
@@ -2244,13 +2339,7 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
       const j = await r.json();
       const total = parseInt(j.count || "0");
       const pois = j.pois || [];
-      document.getElementById("cnt" + idx).innerHTML = total +
-        "<span style='font-size:0.8rem;font-weight:400;color:#9aa7bd'> 个</span>";
-      if (pois.length) {{
-        document.getElementById("near" + idx).innerHTML = "最近 " + pois[0].distance + "m";
-      }} else {{
-        document.getElementById("near" + idx).innerHTML = "范围内无";
-      }}
+      document.getElementById("cnt" + idx).textContent = total;
       if (wantDetail) {{
         const seen = new Set();
         const items = pois.filter(p => {{
@@ -2284,11 +2373,25 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
                     if _transit_items:
                         _dm = _first_dist_re.search(_transit_items[0])
                         _transit_near = f"最近 {_dm.group(1)}m" if _dm else ""
-                    _c1, _c2 = st.columns(2)
-                    _c1.metric("🚇 地铁/高铁/城轨（2km，进AI评估）", f"{_th.get('transit_count', 0)} 个",
-                               _transit_near or "范围内无")
-                    _c2.metric("⚡ 充电站（2km）", f"{_chg_count} 个",
-                               f"最近 {_chg_nearest}m" if _chg_nearest else "范围内无")
+                    # 图标+加粗彩色数字内嵌句子，与左侧"周边设施统计"卡片同一视觉语言
+                    # （2026-07-27，原st.metric()的"数字+delta箭头"样式改掉）
+                    _transit_n = f"<b style='color:#4f46e5;font-size:1.15em'>{_th.get('transit_count', 0)}</b>"
+                    _chg_n = f"<b style='color:#ea580c;font-size:1.15em'>{_chg_count}</b>"
+                    st.markdown(
+                        f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:6px'>"
+                        f"<div style='background:var(--app-surface);border-radius:var(--app-radius-lg);"
+                        f"box-shadow:var(--app-shadow-sm);padding:16px 14px'>"
+                        f"<div style='font-size:20px;margin-bottom:8px'>🚇</div>"
+                        f"<div style='font-size:0.85rem;color:var(--app-text);line-height:1.5'>"
+                        f"周边有 {_transit_n} 个地铁/高铁/城轨站点，通勤便利</div></div>"
+                        f"<div style='background:var(--app-surface);border-radius:var(--app-radius-lg);"
+                        f"box-shadow:var(--app-shadow-sm);padding:16px 14px'>"
+                        f"<div style='font-size:20px;margin-bottom:8px'>⚡</div>"
+                        f"<div style='font-size:0.85rem;color:var(--app-text);line-height:1.5'>"
+                        f"附近有 {_chg_n} 个充电站，能源无忧</div></div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
                     if _transit_items:
                         st.markdown(
                             f"<div style='font-size:0.85rem;color:#5c6b85;padding:2px 2px 10px'>"
