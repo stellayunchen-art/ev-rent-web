@@ -609,7 +609,31 @@ def geocode(address: str):
             # 高德返回 "深圳市" / "广州市"，去掉"市"以匹配 benchmarks.csv 中的城市名
             city_raw = str(geo.get("city", "") or geo.get("province", ""))
             city     = re.sub(r"[市省]$", "", city_raw)
-            district = str(geo.get("district", ""))
+            # ⚠️ 东莞/中山这类"直筒子市"（市下面直接是镇/街道，没有区/县层级），
+            # 高德geocode的district字段会返回空列表[]而不是空字符串，str([])会变成
+            # 字面量文本"[]"，导致行政区标准表查不到、置信度误判。这种情况下真实的
+            # 镇/街道名理论上在township字段里，district为空时先退回用township。
+            district = str(geo.get("district") or "")
+            if district == "[]" or not district:
+                township = str(geo.get("township") or "")
+                district = "" if township == "[]" else township
+            # ⚠️ 实测geocode正向接口有时连township也是空列表（如"东莞市凤岗镇龙平西路60号"
+            # 这个地址），但用同一个坐标反查regeo逆地理编码，township字段能正确返回"凤岗镇"——
+            # 两个接口对同一地址的解析能力不完全一致，district和township都拿不到时，
+            # 用坐标再查一次regeo兜底，好过让整个行政区标准查询失败。
+            if not district:
+                try:
+                    r2 = requests.get(
+                        "https://restapi.amap.com/v3/geocode/regeo",
+                        params={"location": coord, "key": AMAP_KEY, "output": "json"},
+                        timeout=10,
+                    ).json()
+                    comp = r2.get("regeocode", {}).get("addressComponent", {})
+                    rt = str(comp.get("township") or "")
+                    if rt and rt != "[]":
+                        district = rt
+                except Exception:
+                    pass
             return coord, city, district
     except Exception:
         pass
@@ -633,6 +657,27 @@ def _kw_at_end(name_m: str, keywords: list) -> bool:
     return False
 
 
+def _amap_place_around(params: dict):
+    """高德POI周边搜索的统一入口，区分"接口失败/配额耗尽"和"真的查到0个"。
+    ⚠️ 2026-07-26修复：之前每个find_nearby_*函数各自try/except，配额耗尽（status=0，
+    info=USER_DAILY_QUERY_OVER_LIMIT）时requests本身不报异常（是个正常的200响应，
+    只是JSON里status=0），所以旧代码会把"接口拒绝"和"周边真的没有"混为一谈，
+    静默退化成0——实测某次评估因为当天配额用完，交通/工业园/商场/充电站/交通枢纽
+    全部显示0，触发了错误的"低置信度"判断，用户还以为是真的周边什么都没有。
+    现在检查status字段，失败时记进session_state供UI层面统一显眼提示，不再装作0。
+    返回值：成功时返回原始响应dict；失败时返回None（调用方按老逻辑退化为0/空，
+    但_amap_error标记已经设置好，供上层展示警示条）。"""
+    try:
+        r = requests.get("https://restapi.amap.com/v3/place/around", params=params, timeout=10).json()
+    except Exception as e:
+        st.session_state["_amap_error"] = f"请求异常：{e}"
+        return None
+    if str(r.get("status")) != "1":
+        st.session_state["_amap_error"] = str(r.get("info") or "未知错误")
+        return None
+    return r
+
+
 def find_nearby_transit(coord: str):
     """2km内地铁/城轨/高铁/城际/轻轨/火车站。返回 (展示用文本, 完整数量)——
     完整数量与build_station_features.py的count_transit同口径，用于回归模型特征，
@@ -642,22 +687,17 @@ def find_nearby_transit(coord: str):
     在括号里，会被_name_main()去掉后导致名称检测失效、真站点被漏掉；②"雅好花园酒店
     深圳龙华地铁站店"这类商户名称本身就含"地铁站"三字，会被误判为真地铁站纳入统计。
     typecode是高德官方分类，不受商户自报名称影响，一次性解决两个问题。"""
-    try:
-        r = requests.get(
-            "https://restapi.amap.com/v3/place/around",
-            params={"location": coord, "types": "150200|150500", "radius": 2000,
-                    "sortrule": "distance", "offset": 20, "page": 1,
-                    "key": AMAP_KEY, "output": "json"},
-            timeout=10,
-        ).json()
-        pois = [p for p in (r.get("pois") or []) if str(p.get("typecode", "")) in ("150200", "150500")]
-        if not pois:
-            return "", 0
-        lines = [f"{p.get('name', '').strip()}（{p.get('distance', '')}m）" for p in pois[:3]]
-        text = "【周边交通枢纽（高德自动检索，2km内）】\n" + "\n".join(lines)
-        return text, len(pois)
-    except Exception:
+    r = _amap_place_around({"location": coord, "types": "150200|150500", "radius": 2000,
+                             "sortrule": "distance", "offset": 20, "page": 1,
+                             "key": AMAP_KEY, "output": "json"})
+    if r is None:
         return "", 0
+    pois = [p for p in (r.get("pois") or []) if str(p.get("typecode", "")) in ("150200", "150500")]
+    if not pois:
+        return "", 0
+    lines = [f"{p.get('name', '').strip()}（{p.get('distance', '')}m）" for p in pois[:3]]
+    text = "【周边交通枢纽（高德自动检索，2km内）】\n" + "\n".join(lines)
+    return text, len(pois)
 
 
 def find_nearby_industrial(coord: str):
@@ -667,25 +707,20 @@ def find_nearby_industrial(coord: str):
         "产业园", "工业园", "工业区", "科技园", "工业城", "产业城",
         "创新中心", "研发中心", "产业基地", "工业基地",
     ]
-    try:
-        r = requests.get(
-            "https://restapi.amap.com/v3/place/around",
-            params={"location": coord, "keywords": keywords, "radius": 2000,
-                    "sortrule": "distance", "offset": 20, "page": 1,
-                    "key": AMAP_KEY, "output": "json"},
-            timeout=10,
-        ).json()
-        pois = r.get("pois") or []
-        pois = [p for p in pois
-                if _kw_at_end(_name_main(str(p.get("name", ""))), NAME_MUST_CONTAIN)
-                and "-" not in _name_main(str(p.get("name", "")))]
-        if not pois:
-            return "", 0
-        lines = [f"{p.get('name', '').strip()}（{p.get('distance', '')}m）" for p in pois[:5]]
-        text = "【周边工业园/产业园（高德自动检索，2km内）】\n" + "\n".join(lines)
-        return text, len(pois)
-    except Exception:
+    r = _amap_place_around({"location": coord, "keywords": keywords, "radius": 2000,
+                             "sortrule": "distance", "offset": 20, "page": 1,
+                             "key": AMAP_KEY, "output": "json"})
+    if r is None:
         return "", 0
+    pois = r.get("pois") or []
+    pois = [p for p in pois
+            if _kw_at_end(_name_main(str(p.get("name", ""))), NAME_MUST_CONTAIN)
+            and "-" not in _name_main(str(p.get("name", "")))]
+    if not pois:
+        return "", 0
+    lines = [f"{p.get('name', '').strip()}（{p.get('distance', '')}m）" for p in pois[:5]]
+    text = "【周边工业园/产业园（高德自动检索，2km内）】\n" + "\n".join(lines)
+    return text, len(pois)
 
 
 
@@ -704,10 +739,8 @@ def find_nearby_commercial(coord: str):
             "offset": 20, "page": 1, "key": AMAP_KEY, "output": "json",
         }
         params.update(extra)
-        try:
-            r = requests.get("https://restapi.amap.com/v3/place/around",
-                             params=params, timeout=10).json()
-        except Exception:
+        r = _amap_place_around(params)
+        if r is None:
             continue
         for p in (r.get("pois") or []):
             name  = str(p.get("name", "")).strip()
@@ -733,20 +766,15 @@ def find_nearby_commercial(coord: str):
 
 def find_charging_stations(coord: str):
     """2km内充电站数量+最近距离（高德typecode=011100，展示用，不进模型特征）。"""
-    try:
-        r = requests.get(
-            "https://restapi.amap.com/v3/place/around",
-            params={"location": coord, "types": "011100", "radius": 2000,
-                    "sortrule": "distance", "offset": 1, "page": 1,
-                    "key": AMAP_KEY, "output": "json"},
-            timeout=10,
-        ).json()
-        count = int(r.get("count") or 0)
-        pois = r.get("pois") or []
-        nearest = int(pois[0].get("distance") or 0) if pois else None
-        return count, nearest
-    except Exception:
+    r = _amap_place_around({"location": coord, "types": "011100", "radius": 2000,
+                             "sortrule": "distance", "offset": 1, "page": 1,
+                             "key": AMAP_KEY, "output": "json"})
+    if r is None:
         return 0, None
+    count = int(r.get("count") or 0)
+    pois = r.get("pois") or []
+    nearest = int(pois[0].get("distance") or 0) if pois else None
+    return count, nearest
 
 
 # ⚠️ 交通枢纽固定半径规格——必须与 build_station_features.py 的 HUB_SPECS 完全一致
@@ -765,19 +793,15 @@ def find_transit_hubs_extended(coord: str):
     数量既用于页面展示，也作为模型特征（2026-07-15起高铁火车站等纳入回归模型）。"""
     results = []
     for key, label, kw, radius in HUB_SPECS:
-        try:
-            r = requests.get(
-                "https://restapi.amap.com/v3/place/around",
-                params={"location": coord, "keywords": kw, "radius": radius,
-                        "sortrule": "distance", "offset": 1, "page": 1,
-                        "key": AMAP_KEY, "output": "json"},
-                timeout=10,
-            ).json()
+        r = _amap_place_around({"location": coord, "keywords": kw, "radius": radius,
+                                 "sortrule": "distance", "offset": 1, "page": 1,
+                                 "key": AMAP_KEY, "output": "json"})
+        if r is None:
+            count, nearest = 0, None
+        else:
             count = int(r.get("count") or 0)
             pois = r.get("pois") or []
             nearest = int(pois[0].get("distance") or 0) if pois else None
-        except Exception:
-            count, nearest = 0, None
         results.append((key, label, radius, count, nearest))
     return results
 
@@ -1326,6 +1350,7 @@ def run_batch_prediction(name: str, address: str) -> dict:
     if not address:
         row["备注"] = "地址为空，已跳过"
         return row
+    st.session_state.pop("_amap_error", None)  # 清掉上一行可能留下的高德请求失败标记
     coord, city, district = geocode(address)
     if not coord:
         row["备注"] = "定位失败"
@@ -1347,9 +1372,14 @@ def run_batch_prediction(name: str, address: str) -> dict:
         return row
 
     conf_level, conf_reasons, _ = assess_confidence(city, district, transit_count, industrial_count, mall_count, benches)
+    _amap_err = st.session_state.get("_amap_error")
+    _note = "；".join(conf_reasons) if conf_level == "低" else ""
+    if _amap_err:
+        # 本行POI查询过程中高德接口失败过，周边数据/置信度可能不可信，必须在备注里体现
+        _note = (f"⚠️高德接口请求失败（{_amap_err}），周边数据可能不完整；" + _note).rstrip("；")
     row.update({
         "谈判起点": opening, "建议目标": round(target), "边界上限": boundary,
-        "置信度": conf_level, "备注": "；".join(conf_reasons) if conf_level == "低" else "",
+        "置信度": conf_level, "备注": _note,
     })
     return row
 
@@ -1509,6 +1539,11 @@ if batch_submitted:
     for _i, _line in enumerate(_lines, 1):
         _parts = _line.split(",", 1) if "," in _line else ["", _line]
         _bname, _baddr = _parts[0].strip(), _parts[-1].strip()
+        if not _baddr:
+            # 地址末尾带逗号（如"深圳市xx路,"）会被split成[地址, ""]，
+            # 逗号后面是空的——把name字段的内容当地址用，不能让一个多余的
+            # 尾随逗号导致整行地址被判定为空、直接跳过geocode
+            _bname, _baddr = "", _bname
         _rows.append(run_batch_prediction(_bname, _baddr))
         _progress.progress(_i / len(_lines), text=f"批量评估中…（{_i}/{len(_lines)}）")
     _progress.empty()
@@ -1525,6 +1560,8 @@ if submitted:
     if not COZE_TOKEN:
         st.error("请先在 Secrets 中配置 COZE_TOKEN")
         st.stop()
+
+    st.session_state.pop("_amap_error", None)  # 清掉上次评估可能留下的高德请求失败标记
 
     with st.status("评估进行中…", expanded=False) as status_box:
 
@@ -1689,6 +1726,11 @@ if submitted:
         status_box.update(label="✅ 评估完成（点击展开查看评估过程日志）", state="complete", expanded=False)
 
     # 保存结果到 session_state，防止标签页切换/重渲染时结果丢失
+    # ⚠️ eval_amap_error：本次评估过程中是否有高德接口请求失败（配额耗尽/网络异常等）。
+    # 失败时周边设施/交通枢纽会退化成0，看着像"真的什么都没有"，实际是数据不可信，
+    # 必须在结果页面显眼提示，不能让用户误以为是低置信度选址（这类问题2026-07-26修复前
+    # 就真实发生过一次：配额耗尽导致全部POI显示0，触发了错误的"低置信度"判断）。
+    st.session_state.eval_amap_error = st.session_state.pop("_amap_error", None)
     st.session_state.eval_result  = result
     st.session_state.eval_meta    = {"name": f_name, "addr": f_addr, "coord": coord, "city": city, "district": district}
     st.session_state.eval_benches = benches
@@ -1952,6 +1994,21 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
         # 场地信息头条（复用共享组件）
         _township = (st.session_state.get("eval_roads") or {}).get("township", "")
         render_site_header(f_name, city, district, _township, f_addr, coord)
+
+        # ⚠️ 高德接口请求失败提示（配额耗尽/网络异常等）：本次评估过程中若任何POI查询
+        # 被高德拒绝，周边设施/交通枢纽会退化成0，看起来像"真的什么都没有"，实际是
+        # 数据不可信——必须显眼提示，不能让用户误以为是低置信度选址。
+        # 2026-07-26修复：之前只记录了标记没有真正展示出来，属于半成品。
+        _amap_err = st.session_state.get("eval_amap_error")
+        if _amap_err:
+            st.markdown(
+                f"<div style='background:var(--app-danger-soft);border-left:3px solid var(--app-danger);"
+                f"border-radius:8px;padding:12px 16px;margin-bottom:10px;font-size:0.88rem;color:var(--app-text-secondary)'>"
+                f"<b style='color:var(--app-danger)'>⚠️ 高德地图接口请求失败：{_amap_err}</b><br>"
+                f"本次评估过程中部分周边设施/交通枢纽查询被拒绝，下方数据可能显示为0但并非真实情况，"
+                f"「低置信度」判断也可能因此失真。建议稍后（配额类问题通常次日重置）重新评估此站点。</div>",
+                unsafe_allow_html=True,
+            )
 
         # 关键数字：统计模型优先，模型不可用时回退AI文字提取（compute_price_numbers内部处理）
         _model_nums = st.session_state.get("eval_model") or {}
