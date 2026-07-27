@@ -400,6 +400,31 @@ def predict_target_rent(city: str, district: str, transit_count: int, industrial
     return target, boundary, opening
 
 
+def predict_price_range(city: str, district: str, transit_count: int, industrial_count: int, mall_count: int, hub_counts: dict = None):
+    """预测区间（保守/中性/进取三档，2026-07-26新增）：用train_rent_model.py训练的
+    分位数回归模型（10%/50%/90%分位），代替单点数字给出一个价格带。
+    ⚠️ 这是对predict_target_rent()的补充展示，不替代它——目标价/边界/起点价那套硬性
+    业务规则（边界按对标案例推导+95%谈判空间保护）已经过反复打磨，分位数回归只是
+    原始统计意义上的价格分布，不做那些业务规则夹取，仅供参考"这个价大概率的浮动范围"。
+    K折校准检验：conservative目标10%分位实际覆盖10.6%、aggressive目标90%分位实际
+    覆盖89.6%，分位数交叉率仅0.2%，可信。
+    返回 (保守价, 中性价, 进取价)，模型不可用/未训练分位数模型时返回 (None, None, None)。"""
+    bundle = load_rent_model()
+    if bundle is None or not bundle.get("quantile_pipelines"):
+        return None, None, None
+    row = _model_feature_row(city, district, transit_count, industrial_count, mall_count, hub_counts)
+    try:
+        qp = bundle["quantile_pipelines"]
+        conservative = float(np.exp(qp["conservative"].predict(row)[0]))
+        neutral      = float(np.exp(qp["neutral"].predict(row)[0]))
+        aggressive   = float(np.exp(qp["aggressive"].predict(row)[0]))
+    except Exception:
+        return None, None, None
+    # 防止极小概率的分位数交叉导致展示乱序（训练时K折已验证交叉率仅0.2%，这里兜底排序）
+    conservative, neutral, aggressive = sorted([conservative, neutral, aggressive])
+    return (round(conservative / 10) * 10, round(neutral / 10) * 10, round(aggressive / 10) * 10)
+
+
 def explain_prediction(city: str, district: str, transit_count: int, industrial_count: int, mall_count: int, hub_counts: dict = None):
     """把Ridge回归模型的预测拆解成"行政区基准 × 各特征调整系数"的可读分项，
     回答"这个数字是怎么算出来的"，而不是只吐一个黑箱数字。
@@ -905,6 +930,35 @@ def render_price_explainability(explain: dict):
     st.caption("以上为模型系数拆解（未经边界夹取前的原始预测过程），最终目标价见上方价格卡（已按行政区标准夹取留出谈判空间）")
 
 
+def render_price_range(price_range):
+    """预测区间：保守/中性/进取三档（2026-07-26新增），代替单点数字更适合谈判场景——
+    保守价是"大概率能拿下的价"，进取价是"运气好能冲到的价"。纯参考展示，不影响
+    上方价格卡的目标/边界/起点价（那套有对标案例+行政区标准的硬性业务规则约束）。"""
+    if not price_range or not all(price_range):
+        return
+    conservative, neutral, aggressive = price_range
+    st.markdown(
+        f"""
+<div style="display:flex;gap:10px;margin-bottom:6px">
+  <div style="flex:1;background:var(--app-surface);border:1px solid var(--app-border);border-radius:10px;padding:10px 14px;text-align:center">
+    <div style="font-size:0.78rem;color:var(--app-text-muted)">保守</div>
+    <div style="font-size:1.2rem;font-weight:600;color:var(--app-text)">¥{conservative:.0f}</div>
+  </div>
+  <div style="flex:1;background:var(--app-accent-soft);border:1px solid var(--app-border);border-radius:10px;padding:10px 14px;text-align:center">
+    <div style="font-size:0.78rem;color:var(--app-accent)">中性</div>
+    <div style="font-size:1.2rem;font-weight:700;color:var(--app-accent)">¥{neutral:.0f}</div>
+  </div>
+  <div style="flex:1;background:var(--app-surface);border:1px solid var(--app-border);border-radius:10px;padding:10px 14px;text-align:center">
+    <div style="font-size:0.78rem;color:var(--app-text-muted)">进取</div>
+    <div style="font-size:1.2rem;font-weight:600;color:var(--app-text)">¥{aggressive:.0f}</div>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+    st.caption("统计模型分位数回归给出的价格分布区间（10%/50%/90%分位，纯参考），不参与上方价格卡的业务规则计算")
+
+
 def format_report(result: str) -> str:
     """把报告文本格式化为适合 st.markdown 的形式（分节分隔线+强制换行）。"""
     SECTION_EMOJIS = ("📍", "📚", "💡", "💰", "🤝", "🔥")
@@ -1405,6 +1459,10 @@ if submitted:
             st.write(f"  · 模型预测目标租金：{model_target:.0f} 元 ｜ 边界：{model_boundary} 元 ｜ 起点价：{model_opening:.0f} 元")
         else:
             st.write("  ⚠️ 未找到该行政区的租金标准或模型不可用，将退回由AI自行判断数字")
+        # 预测区间（保守/中性/进取，纯参考，不参与Coze/边界业务规则）
+        price_conservative, price_neutral, price_aggressive = predict_price_range(
+            city, district, transit_count, industrial_count, mall_count, hub_counts
+        )
 
         # Step 2.75：周边路网（regeo最近道路，展示用）
         township, nearby_roads = find_nearby_roads(coord)
@@ -1452,6 +1510,7 @@ if submitted:
         "target": model_target, "boundary": model_boundary, "opening": model_opening,
         "transit_count": transit_count, "industrial_count": industrial_count, "mall_count": mall_count,
         "hub_counts": hub_counts,
+        "price_range": (price_conservative, price_neutral, price_aggressive),
     }
     st.session_state.eval_confidence = {"level": conf_level, "reasons": conf_reasons, "advice": conf_advice}
     st.session_state.eval_roads = {"township": township, "roads": nearby_roads}
@@ -1772,6 +1831,7 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
             # 但比黑箱吐一个数字更能让人信服——领导工具的×0.85折扣看不出这层依据
             if _model_nums.get("target"):
                 with st.expander("📈 这个价格是怎么算出来的"):
+                    render_price_range(_model_nums.get("price_range"))
                     _ec1, _ec2 = st.columns([1.1, 1], gap="medium")
                     with _ec1:
                         st.markdown("**行政区历史租金趋势**")
