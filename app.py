@@ -2552,7 +2552,10 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
       </div>
       {_sim_html}
     </div>"""
-                    st.markdown(_rows_html, unsafe_allow_html=True)
+                    # 2026-07-27再改：卡片撑满整个页面宽度，但每行内容很短，
+                    # justify-content:space-between把站点名和右侧灰字拉到两端，中间大片空白，
+                    # 用户反馈"看的难受"。限定max-width让每行紧凑一些，不再贴满整个容器宽度。
+                    st.markdown(f'<div style="max-width:640px">{_rows_html}</div>', unsafe_allow_html=True)
                     st.caption("⚠️早期 = 2025年上半年及以前过会，早期建站未严格管控租金，成交租金不具参考性，仅边界可参考")
             else:
                 st.info(
