@@ -2499,19 +2499,60 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
                             "租金边界(元)": int(_boundary) if _boundary else None,
                             "相似/差异": "",
                         })
-                    _df_show = pd.DataFrame(rows_)
-                    _df_show["距离(km)"] = _df_show["距离(km)"].apply(lambda v: f"{v:.2f}" if isinstance(v, (int, float)) and v is not None else "—")
-                    st.dataframe(
-                        _df_show, hide_index=True, width="stretch",
-                        column_config={
-                            "来源":       st.column_config.TextColumn(width="small"),
-                            "行政区":     st.column_config.TextColumn(width="small"),
-                            "距离(km)":   st.column_config.TextColumn(width="small"),
-                            "成交租金(元)": st.column_config.NumberColumn(format="¥%d"),
-                            "租金边界(元)": st.column_config.NumberColumn(format="¥%d"),
-                            "相似/差异":  st.column_config.TextColumn(width="large"),
-                        },
-                    )
+                    # 2026-07-27改为无边框列表卡片（参考苹果iPhone/AirPods对比页——完全靠
+                    # 字号/字重/留白区分层级，没有任何格子边框），替换掉原来st.dataframe()的
+                    # 表格网格线，用户反馈"格子很丑"。行数会变（1~9个对标站点不等），所以沿用
+                    # "每站一行"而不是模仿苹果"每产品一列"（那是固定3-4列的场景，站点数量
+                    # 不固定时列会挤爆），只是把表格的视觉语言换成苹果那种纯排版对比。
+                    _BADGE_BG = {"🎯最近对标": "var(--app-accent-soft)", "🏭全市补充": "var(--app-surface)"}
+                    _rows_html = ""
+                    for _row in rows_:
+                        _is_target = _row["站点"] == "★ 本站建议"
+                        _rent = f"¥{_row['成交租金(元)']}" if _row["成交租金(元)"] is not None else "—"
+                        _bound = f"¥{_row['租金边界(元)']}" if _row["租金边界(元)"] is not None else "—"
+                        _dist = f"{_row['距离(km)']:.2f}km · " if isinstance(_row["距离(km)"], (int, float)) else ""
+                        _audit = _row["内审日期"]
+                        _audit_html = (
+                            _audit.replace("⚠️早期", "<span style='color:var(--app-danger)'>⚠️早期</span>")
+                            if "⚠️早期" in _audit else _audit
+                        )
+                        _badge = (
+                            f"<span style='background:{_BADGE_BG.get(_row['来源'], 'var(--app-accent)')};"
+                            f"color:{'var(--app-text-secondary)' if _row['来源'] in _BADGE_BG else '#fff'};"
+                            f"border-radius:999px;padding:2px 10px;font-size:0.72rem;font-weight:600;"
+                            f"margin-right:8px;white-space:nowrap'>{_row['来源'] or '本站'}</span>"
+                            if not _is_target else ""
+                        )
+                        _sim = _row["相似/差异"]
+                        _sim_html = (
+                            f"<div style='margin-top:8px;font-size:0.82rem;color:var(--app-text-secondary);"
+                            f"line-height:1.6'>{_sim}</div>"
+                            if _sim and _sim != "—" else ""
+                        )
+                        _row_style = (
+                            "background:var(--app-accent-soft);border-radius:var(--app-radius);"
+                            "padding:16px 18px;margin-top:6px"
+                            if _is_target else
+                            "padding:16px 4px;border-bottom:1px solid var(--app-border)"
+                        )
+                        _rows_html += f"""
+    <div style="{_row_style}">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px 16px">
+        <div style="font-weight:700;font-size:0.98rem;color:var(--app-text)">{_badge}{_row['站点']}</div>
+        <div style="font-size:0.8rem;color:var(--app-text-muted);white-space:nowrap">
+          {_row['行政区']} · {_dist}{_audit_html}</div>
+      </div>
+      <div style="margin-top:4px;font-size:0.82rem;color:var(--app-text-secondary)">
+        {_row['商圈类型']} · {_row['道路条件']}</div>
+      <div style="margin-top:12px;display:flex;gap:32px">
+        <div><div style="font-size:0.72rem;color:var(--app-text-muted)">成交租金</div>
+          <b style="font-size:1.2rem;color:var(--app-text)">{_rent}</b></div>
+        <div><div style="font-size:0.72rem;color:var(--app-text-muted)">租金边界</div>
+          <b style="font-size:1.2rem;color:var(--app-text)">{_bound}</b></div>
+      </div>
+      {_sim_html}
+    </div>"""
+                    st.markdown(_rows_html, unsafe_allow_html=True)
                     st.caption("⚠️早期 = 2025年上半年及以前过会，早期建站未严格管控租金，成交租金不具参考性，仅边界可参考")
             else:
                 st.info(
