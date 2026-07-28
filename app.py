@@ -2,6 +2,7 @@
 # 部署到 Streamlit Community Cloud（免费）
 
 import re
+import html
 import streamlit as st
 import requests
 import pandas as pd
@@ -1017,7 +1018,11 @@ def find_benchmarks(coord: str, city: str, station_name: str, df: pd.DataFrame):
             continue
         candidates.append((d, row))
     candidates.sort(key=lambda x: x[0])
-    return candidates[:3]
+    # 2026-07-27改为5个（原3个）：用户反馈"全市同类型补充"那套按area_type关键词匹配的
+    # 远距离站点参考意义不大，不如直接按直线距离从近到远多取几个更直观。取消原来
+    # "最近3个若都>3km则额外补充"的两段式逻辑（find_industrial_supplement），统一简化为
+    # 纯距离排序取前5——同城市/跨城市不限，高速站仍只比高速站（is_highway过滤不变）。
+    return candidates[:5]
 
 
 INDUSTRIAL_KEYWORDS = ["工业区", "工业园", "产业园", "城中村", "物流", "厂房", "五金", "制造", "仓储"]
@@ -1792,17 +1797,11 @@ if submitted:
         else:
             st.write("  · 1.5km 内未检索到大型商业/文化设施")
 
-        # Step 2.6：最近对标站点普遍偏远 + 周边工业多商业少 → 全市补充同类型（工业区/城中村）站点
-        # 让AI有真实同类案例可归纳，而非在无相关数据时硬套公式
+        # Step 2.6：（2026-07-27移除）原来最近对标站点普遍偏远时会额外在全市范围按area_type
+        # 关键词补充同类型（工业区/城中村）站点——用户反馈这类远距离、仅靠关键词匹配的补充案例
+        # "参考意义不大"，改为find_benchmarks直接按直线距离取5个（见上方定义），不再需要这层
+        # 补充逻辑。find_industrial_supplement()函数保留但不再调用，supplement恒为空列表。
         supplement = []
-        if benches and min(d for d, _ in benches) > 3.0:
-            st.write("🏗️ 附近对标站点较远，正在全市范围补充同类型（工业区/城中村）站点…")
-            existing_names = {row["name"] for _, row in benches}
-            # 需要足够数量才能覆盖不同价格片区（如近处高价corridor + 远一点的低价工业带），
-            # 让AI有完整图景可比较归纳，而非只看到与最近3个同质的高价案例
-            supplement = find_industrial_supplement(coord, city, f_name, existing_names, df, need=6)
-            for d_km, row in supplement:
-                st.write(f"  · {row['name']}（同类型补充） — {round(d_km, 2)} km")
 
         # Step 2.65：充电站 + 交通枢纽固定半径搜索
         # ⚠️ 必须在Step 2.7模型预测之前算好——高铁/火车站等4类枢纽数量现在是模型特征。
@@ -2511,7 +2510,17 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
                         _rent = f"¥{_row['成交租金(元)']}" if _row["成交租金(元)"] is not None else "—"
                         _bound = f"¥{_row['租金边界(元)']}" if _row["租金边界(元)"] is not None else "—"
                         _dist = f"{_row['距离(km)']:.2f}km · " if isinstance(_row["距离(km)"], (int, float)) else ""
-                        _audit = _row["内审日期"]
+                        # ⚠️ 站点名/行政区/商圈类型/道路条件/相似差异都可能来自Excel原始数据或
+                        # Coze LLM生成的自由文本，任何一个字段里混进引号/尖括号都会打断外层HTML
+                        # 属性拼接，导致st.markdown从那一行起整段跌出HTML渲染变成纯文字——2026-07-27
+                        # 实测踩过（具体哪个站点的文本触发的未定位到，但escape能一次性堵死这类问题，
+                        # 不用逐个字段找是谁的锅）。数字类字段（租金/边界/距离）已经过_num()数值转换，
+                        # 天然安全，不需要转义。
+                        _name_e = html.escape(str(_row["站点"]))
+                        _district_e = html.escape(str(_row["行政区"]))
+                        _bc_e = html.escape(str(_row["商圈类型"]))
+                        _road_e = html.escape(str(_row["道路条件"]))
+                        _audit = html.escape(str(_row["内审日期"]))
                         _audit_html = (
                             _audit.replace("⚠️早期", "<span style='color:var(--app-danger)'>⚠️早期</span>")
                             if "⚠️早期" in _audit else _audit
@@ -2520,10 +2529,10 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
                             f"<span style='background:{_BADGE_BG.get(_row['来源'], 'var(--app-accent)')};"
                             f"color:{'var(--app-text-secondary)' if _row['来源'] in _BADGE_BG else '#fff'};"
                             f"border-radius:999px;padding:2px 10px;font-size:0.72rem;font-weight:600;"
-                            f"margin-right:8px;white-space:nowrap'>{_row['来源'] or '本站'}</span>"
+                            f"margin-right:8px;white-space:nowrap'>{html.escape(_row['来源'] or '本站')}</span>"
                             if not _is_target else ""
                         )
-                        _sim = _row["相似/差异"]
+                        _sim = html.escape(str(_row["相似/差异"]))
                         _sim_html = (
                             f"<div style='margin-top:8px;font-size:0.82rem;color:var(--app-text-secondary);"
                             f"line-height:1.6'>{_sim}</div>"
@@ -2538,12 +2547,12 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
                         _rows_html += f"""
     <div style="{_row_style}">
       <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px 16px">
-        <div style="font-weight:700;font-size:0.98rem;color:var(--app-text)">{_badge}{_row['站点']}</div>
+        <div style="font-weight:700;font-size:0.98rem;color:var(--app-text)">{_badge}{_name_e}</div>
         <div style="font-size:0.8rem;color:var(--app-text-muted);white-space:nowrap">
-          {_row['行政区']} · {_dist}{_audit_html}</div>
+          {_district_e} · {_dist}{_audit_html}</div>
       </div>
       <div style="margin-top:4px;font-size:0.82rem;color:var(--app-text-secondary)">
-        {_row['商圈类型']} · {_row['道路条件']}</div>
+        {_bc_e} · {_road_e}</div>
       <div style="margin-top:12px;display:flex;gap:32px">
         <div><div style="font-size:0.72rem;color:var(--app-text-muted)">成交租金</div>
           <b style="font-size:1.2rem;color:var(--app-text)">{_rent}</b></div>
@@ -2555,7 +2564,12 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
                     # 2026-07-27再改：卡片撑满整个页面宽度，但每行内容很短，
                     # justify-content:space-between把站点名和右侧灰字拉到两端，中间大片空白，
                     # 用户反馈"看的难受"。限定max-width让每行紧凑一些，不再贴满整个容器宽度。
-                    st.markdown(f'<div style="max-width:640px">{_rows_html}</div>', unsafe_allow_html=True)
+                    # ⚠️ 同一天发现真bug：_rows_html的f-string每行都有4格以上缩进，st.markdown()会
+                    # 经过CommonMark解析——4格缩进在markdown里是"缩进代码块"语法，导致渲染到第三个
+                    # 站点时突然从HTML block判定跌出，后面的<div>标签全部原样显示成文字。逐行strip()
+                    # 去掉缩进即可（本地测试脚本是纯静态HTML、不经过markdown解析器，所以没跑出这个坑）。
+                    _rows_html_flat = "\n".join(l.strip() for l in _rows_html.splitlines() if l.strip())
+                    st.markdown(f'<div style="max-width:640px">{_rows_html_flat}</div>', unsafe_allow_html=True)
                     st.caption("⚠️早期 = 2025年上半年及以前过会，早期建站未严格管控租金，成交租金不具参考性，仅边界可参考")
             else:
                 st.info(
