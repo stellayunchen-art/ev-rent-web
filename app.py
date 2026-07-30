@@ -404,6 +404,26 @@ def model_stats_note() -> str:
     return f"{n}个历史场地训练 · MAPE {mape_str}"
 
 
+def model_staleness_note() -> str:
+    """2026-07-27新增：检查模型是否该重训了，不用她自己记"距上次重训多久"。
+    没有单独存训练时间戳（重训前的旧模型不会有），改用bundle里已有的audit_num_range
+    （训练数据里最新样本的时间）——这个信号其实比"文件何时生成"更贴切：audit_num
+    时间趋势特征的校正精度依赖训练数据够新，哪怕昨天刚重训、但用的还是3个月前的
+    数据，时间外推照样越拉越不准（见CLAUDE.md"关于时间趋势特征audit_num"一节）。
+    超过约2个月没有新样本时提示，不到不返回空字符串。"""
+    bundle = load_rent_model()
+    if not bundle:
+        return ""
+    rng = bundle.get("audit_num_range")
+    if not rng:
+        return ""
+    gap = _current_audit_num() - rng[1]
+    if gap > 2 / 12:
+        months = round(gap * 12)
+        return f"⚠️ 训练数据最新样本距今约{months}个月，建议重训模型（土地租金标准调整后 或 每季度）"
+    return ""
+
+
 @st.cache_data(show_spinner=False, ttl=3600)
 def district_sample_count(city: str, district: str) -> int:
     """该城市-行政区在训练集（station_features.csv）中的样本数，用于置信度评估。"""
@@ -742,8 +762,31 @@ def render_backtest_page():
     st.caption("红色虚线=完美预测（预测值=实际值）；点越贴近虚线，模型越准。散点整体分布反映的是真实预测能力，不是挑好看的案例展示")
 
     with st.expander("查看误差最大的10个站点（供排查数据质量或模型盲区）"):
+        # 2026-07-28改为和对标案例对比同一套无边框列表卡片（原st.dataframe()网格线表格），
+        # 保持"详细分析"整体视觉一致；同样对动态文本字段做html.escape()防御（同一个坑）
         worst = bt.reindex(bt["误差%"].abs().sort_values(ascending=False).index).head(10)
-        st.dataframe(worst, hide_index=True, width="stretch")
+        _worst_html = ""
+        for _, _r in worst.iterrows():
+            _err = float(_r["误差%"])
+            _err_color = "var(--app-danger)" if abs(_err) > 20 else "var(--app-text)"
+            _worst_html += f"""
+    <div style="padding:14px 4px;border-bottom:1px solid var(--app-border)">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px 16px">
+        <div style="font-weight:700;font-size:0.95rem;color:var(--app-text)">{html.escape(str(_r['name']))}</div>
+        <div style="font-size:0.8rem;color:var(--app-text-muted);white-space:nowrap">
+          {html.escape(str(_r['city']))}{html.escape(str(_r['district']))} · {html.escape(str(_r['audit_date']))}</div>
+      </div>
+      <div style="margin-top:10px;display:flex;gap:32px">
+        <div><div style="font-size:0.72rem;color:var(--app-text-muted)">实际成交价</div>
+          <b style="font-size:1.1rem;color:var(--app-text)">¥{_r['实际成交价']:.0f}</b></div>
+        <div><div style="font-size:0.72rem;color:var(--app-text-muted)">模型预测价</div>
+          <b style="font-size:1.1rem;color:var(--app-text)">¥{_r['模型预测价']:.0f}</b></div>
+        <div><div style="font-size:0.72rem;color:var(--app-text-muted)">误差</div>
+          <b style="font-size:1.1rem;color:{_err_color}">{_err:+.1f}%</b></div>
+      </div>
+    </div>"""
+        _worst_flat = "\n".join(l.strip() for l in _worst_html.splitlines() if l.strip())
+        st.markdown(f'<div style="max-width:640px">{_worst_flat}</div>', unsafe_allow_html=True)
 
 
 def geocode(address: str):
@@ -1675,8 +1718,14 @@ with st.sidebar:
         )
     else:
         st.markdown("### 📐 模型回测")
-        st.caption("对576个历史场地做5折交叉验证样本外预测，看模型预测vs实际成交的吻合程度——不需要输入，切到这个模式直接看右侧结果")
+        # ⚠️ 2026-07-27：这里之前也写死了"576个历史场地"，和render_backtest_page()里
+        # 同一个bug（数据集早扩充到615），当时只改了正文没同步改这里，现在一起改成不提具体数字
+        # （交叉验证跑完后页面上会显示真实样本数，这里不用重复一遍容易漏改的数字）
+        st.caption("对历史场地做5折交叉验证样本外预测，看模型预测vs实际成交的吻合程度——不需要输入，切到这个模式直接看右侧结果")
     st.caption(f"📊 统计模型：{model_stats_note()}")
+    _stale_note = model_staleness_note()
+    if _stale_note:
+        st.caption(_stale_note)
 
 # ── Session State 初始化 ──────────────────────
 if "eval_result" not in st.session_state:
