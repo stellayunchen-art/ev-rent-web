@@ -365,10 +365,25 @@ def load_rent_standard() -> dict:
 
 
 def lookup_rent_standard(city: str, district: str):
-    """查行政区标准范围 (low, high)；查不到返回 None。"""
+    """查行政区标准范围 (low, high)；查不到返回 None。
+    ⚠️ 2026-07-28修复真实bug：肇庆"四会"前几年"撤市设区"，高德geocode对这个地址返回的
+    district仍是旧称"四会市"，但rent_standard.csv早已用新称"四会区"登记——精确匹配失败，
+    predict_target_rent()整串返回None，级联导致价格卡、商圈类型/道路条件全部消失
+    （这些都依赖模型算出的数字才会被写进传给Coze的benchmark_info）。这类"撤县设区/撤市设区"
+    行政区划调整不止四会一个，精确匹配失败时去掉结尾的市/区/县模糊再试一次，只要行政区
+    主体名字一样就算命中，不用为每个改过名的地方单独打补丁。"""
     table = load_rent_standard()
     city_clean = str(city).replace("市", "").strip()
-    return table.get((city_clean, str(district).strip()))
+    d = str(district).strip()
+    hit = table.get((city_clean, d))
+    if hit:
+        return hit
+    if d and d[-1] in ("市", "区", "县"):
+        d_stem = d[:-1]
+        for (c, dd), v in table.items():
+            if c == city_clean and dd and dd[-1] in ("市", "区", "县") and dd[:-1] == d_stem:
+                return v
+    return None
 
 
 @st.cache_resource(show_spinner=False)
