@@ -441,13 +441,26 @@ def model_staleness_note() -> str:
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def district_sample_count(city: str, district: str) -> int:
-    """该城市-行政区在训练集（station_features.csv）中的样本数，用于置信度评估。"""
+    """该城市-行政区在训练集（station_features.csv）中的样本数，用于置信度评估
+    和predict_target_rent()的稀疏样本收缩（shrinkage）。
+    ⚠️ 2026-07-28修复：和lookup_rent_standard()同一个"撤市设区"命名不一致的坑——
+    实测肇庆"四会"，geocode返回"四会市"，但station_features.csv里的训练样本
+    还是旧称"四会区"，精确匹配数出来是0，明明有1条真实样本却因为命名对不上被
+    当成"完全没数据"，导致低置信度判断和后面的shrinkage都失真。精确匹配失败时
+    同样去掉结尾市/区/县模糊再试。"""
     if not FEATURES_CSV.exists():
         return 0
     df = pd.read_csv(FEATURES_CSV, encoding="utf-8-sig")
     city_clean = str(city).replace("市", "").strip()
-    return int(((df["city"].astype(str).str.strip() == city_clean) &
-                (df["district"].astype(str).str.strip() == str(district).strip())).sum())
+    d = str(district).strip()
+    city_mask = df["city"].astype(str).str.strip() == city_clean
+    exact = int((city_mask & (df["district"].astype(str).str.strip() == d)).sum())
+    if exact > 0 or not d or d[-1] not in ("市", "区", "县"):
+        return exact
+    d_stem = d[:-1]
+    district_stems = df["district"].astype(str).str.strip()
+    fuzzy_mask = district_stems.apply(lambda x: bool(x) and x[-1] in ("市", "区", "县") and x[:-1] == d_stem)
+    return int((city_mask & fuzzy_mask).sum())
 
 
 def assess_confidence(city, district, transit_count, industrial_count, mall_count, benches):
@@ -585,6 +598,22 @@ def predict_target_rent(city: str, district: str, transit_count: int, industrial
         return None, None, None
 
     low, high = std
+    # ⚠️ 2026-07-28新增：行政区训练样本稀疏/为0时向标准区间中位数收缩（shrinkage）。
+    # 根因：city_district是one-hot编码，OneHotEncoder(handle_unknown='ignore')对训练时
+    # 从没见过的行政区组合会把这个特征整体归零——模型完全不知道"这是哪个城市"，只能靠
+    # 其他数值特征隐含地按训练集整体分布外推。实测615条训练样本里深圳/广州/东莞/佛山四个
+    # 贵城市占了65%，整体均价¥778，而肇庆样本均价只有¥550——一个从没见过的肇庆行政区，
+    # 外推结果会被训练集里数量占大头的贵城市拉高，不是模型不认真，是"一个完全没見过的
+    # 便宜城市"这种情况下one-hot机制先天就没法给模型任何地域信号。用户对比领导工具后
+    # 发现明显偏高，实测这次肇庆-四会案例：raw模型预测¥481，但当地仅1个真实训练样本、
+    # 行政区标准仅300-500。修法：样本数越少，越多地向行政区标准区间中位数（业务人员
+    # 拍定、反映真实当地行情，比"被大城市拉偏的模型外推"更可信）收缩；样本数≥10时
+    # 权重收到1.0，完全信任模型（此时该行政区有足够真实数据支撑，不需要收缩）。
+    n_local = district_sample_count(city, district)
+    if n_local < 10:
+        model_weight = min(1.0, 0.3 + 0.07 * n_local)
+        std_mid = (low + high) / 2
+        raw_target = model_weight * raw_target + (1 - model_weight) * std_mid
     # 边界=周边对标案例边界的最高水平，封顶到行政区标准上限（不再无脑=标准上限）
     boundary = _derive_boundary(low, high, bench_rows)
     # 目标价夹取在[标准下限, 边界×95%]——刻意不允许目标=边界，保留谈判空间
