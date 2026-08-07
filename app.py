@@ -541,9 +541,14 @@ def _model_feature_row(city, district, transit_count, industrial_count, mall_cou
 
 
 _BOUNDARY_COMP_MAX_KM = 8  # 超过这个距离的对标案例不参与边界封顶计算，见下方docstring
+# 人流锚点数（2km内大型商场 + 交通枢纽）→ 取对标案例"相对位置"的哪个分位数。
+# 阈值按615条历史数据的锚点分布校准（10/25/50/75/90分位分别是 0/3/9/17/21 个），
+# 不是拍脑袋的数字：锚点<8个（半数以下水平）只给中位数，≥20个（接近90分位、
+# 真正的商业/交通密集区）才允许顶格。2026-08-07上线，见_derive_boundary的docstring。
+_BOUNDARY_ANCHOR_TIERS = ((0, 0.50), (8, 0.75), (20, 1.00))
 
 
-def _derive_boundary(std_low, std_high, bench_rows):
+def _derive_boundary(std_low, std_high, bench_rows, mall_count=0, transit_count=0):
     """边界上限：以周边对标案例的边界为基准，再用行政区标准上下限硬性封顶。
     ⚠️ 不再无脑取行政区标准上限——那会在对标案例边界普遍偏低时（如工业区周边案例
     边界700-850，但行政区标准上限1000）把边界顶到不合理的高位（用户实测黄埔云埔工业区案例）。
@@ -557,20 +562,55 @@ def _derive_boundary(std_low, std_high, bench_rows):
     阈值语义——只是不是新发明一个数字，直接用assess_confidence()里已经在用的8km
     （"nearest>8km→无近距离市场参照"），架构上保持一致：同一个距离，在置信度那里被判定
     "不算近距离参照"，在这里也不该被允许参与边界封顶。超过8km的对标仍然完整展示在
-    "对标案例对比"里供人工参考，只是不再用来推高边界。"""
-    bounds = []
+    "对标案例对比"里供人工参考，只是不再用来推高边界。
+    ⚠️ 2026-08-07重做（用户反馈"基本每个站的边界都给到租金标准封顶价，非常不合理"，
+    全量核查证实：599个站点里83.6%的边界顶格）。原因是两个机制叠加，都已修正：
+    1. **跨行政区的边界值根本不可比**。find_benchmarks()不限制城市，广佛/深莞交界的站点
+       会匹配到隔壁更贵行政区的案例——实测佛山南海盐步站，1.88km/3.24km两个最近对标是
+       广州荔湾区的（边界800/1000），而荔湾标准700-900、南海只有500-750，拿荔湾的绝对
+       数字当锚点，必然远超南海上限、被封顶回750。现改为**先把每个对标的边界归一化成
+       它在自己行政区标准区间内的相对位置**（如荔湾800在700-900里只是0.50，并不算高），
+       取分位数后再映射回本站点行政区的区间——同一个"相对档位"跨区才有可比性。
+    2. **取max()对单个顶格案例过于敏感**。知识库里55.8%的案例边界本身就等于其行政区上限
+       （历史上"早期建站未严格管控租金"的遗留），只要5个最近对标里混进一个顶格案例，
+       max()就会把边界拽到顶。改为按分位数取，反映这批对标的普遍水平而非最高个例。
+    分位数由**人流锚点数（2km内大型商场+交通枢纽）**决定，不是固定值——这样"确实是核心
+    商圈的站点依然能拿到高边界"，不会被一刀切压低。实证支持：锚点数与边界相对位置的
+    相关系数0.288（方向正确），历史上锚点0个的站点边界中位数落在标准区间0.75位置、
+    锚点10个以上的才普遍顶格（1.00）。⚠️ 刻意**不含工业园数**——实测工业园数与边界相对
+    位置相关系数仅-0.018（几乎无关），且工业园按业务定义只支撑"次级商圈"而非"核心商圈"，
+    黄埔云埔工业区那次顶格误判正是这个原因。
+    ⚠️ 高德配额耗尽时POI计数会退化成0 → 锚点0个 → 取中位数（偏保守），这是安全的失败
+    方向（宁可报价保守也不要虚高），且页面已有显眼的接口失败警示条提示数据不可信。
+    用户在A宽松/B中等/C保守三档回测结果中选定B档（顶格率83.6%→66.6%）。"""
+    rels = []
     for _d_km, row in (bench_rows or []):
         if _d_km is not None and _d_km > _BOUNDARY_COMP_MAX_KM:
             continue
         try:
             b = float(str(row.get("bound_rent", "")).replace(",", "").strip())
-            if b > 0:
-                bounds.append(b)
         except (ValueError, TypeError):
             continue
-    if not bounds:
+        if b <= 0:
+            continue
+        # 归一化到该对标站点"自己"行政区的标准区间；查不到标准时退回用本站点的区间
+        # （同市场近似），避免因个别地名对不上就整条丢弃。
+        comp_std = lookup_rent_standard(row.get("city", ""), row.get("district", ""))
+        c_low, c_high = comp_std if comp_std else (std_low, std_high)
+        if c_high <= c_low:
+            c_low, c_high = std_low, std_high
+        if c_high <= c_low:
+            continue
+        rels.append(min(1.0, max(0.0, (b - c_low) / (c_high - c_low))))
+    if not rels:
         return std_high
-    derived = max(bounds)
+    anchors = (mall_count or 0) + (transit_count or 0)
+    q = _BOUNDARY_ANCHOR_TIERS[0][1]
+    for threshold, tier_q in _BOUNDARY_ANCHOR_TIERS:
+        if anchors >= threshold:
+            q = tier_q
+    rel = float(np.quantile(sorted(rels), q))
+    derived = std_low + rel * (std_high - std_low)
     # 封顶到行政区标准上限、不低于下限，取整到10元
     derived = min(std_high, max(std_low, derived))
     return round(derived / 10) * 10
@@ -615,7 +655,8 @@ def predict_target_rent(city: str, district: str, transit_count: int, industrial
         std_mid = (low + high) / 2
         raw_target = model_weight * raw_target + (1 - model_weight) * std_mid
     # 边界=周边对标案例边界的最高水平，封顶到行政区标准上限（不再无脑=标准上限）
-    boundary = _derive_boundary(low, high, bench_rows)
+    boundary = _derive_boundary(low, high, bench_rows,
+                                mall_count=mall_count, transit_count=transit_count)
     # 目标价夹取在[标准下限, 边界×95%]——刻意不允许目标=边界，保留谈判空间
     target_cap = max(low, round(boundary * 0.95 / 10) * 10)
     target = max(low, min(target_cap, round(raw_target / 10) * 10))
