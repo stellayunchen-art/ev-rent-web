@@ -311,6 +311,12 @@ if USERS:
 #  读取 Secrets
 # ═══════════════════════════════════════════════
 AMAP_KEY         = st.secrets.get("AMAP_KEY",         "ce2119b87985d25e49cff4c05c6938ff")
+# ⚠️ 2026-08-07从10秒放宽到20秒：网页版跑在Streamlit Cloud的海外服务器上，访问国内高德
+# 是跨境链路，往返延迟本来就高且不稳定，10秒实测会偶发 Read timed out（用户线上遇到）。
+# 超时会让POI计数静默退化成0，而POI既是模型特征、又决定新的边界分位数档位，所以宁可多等
+# 一会儿也不要拿残缺数据算价。代价是极端情况下评估变慢（每个超时的请求多等10秒），
+# 但实际只会有个别请求超时，不是全部，可以接受。
+AMAP_TIMEOUT     = 20
 COZE_TOKEN       = st.secrets.get("COZE_TOKEN",       "")
 COZE_WORKFLOW_ID = st.secrets.get("COZE_WORKFLOW_ID", "7642236438868312079")
 # 评估历史台账（2026-07-26新增）：GitHub PAT需要"Contents: Read and write"权限，
@@ -897,7 +903,7 @@ def geocode(address: str):
         r = requests.get(
             "http://restapi.amap.com/v3/geocode/geo",
             params={"address": address, "key": AMAP_KEY, "output": "json"},
-            timeout=10,
+            timeout=AMAP_TIMEOUT,
         ).json()
         if r.get("status") == "1" and r.get("count", "0") != "0":
             geo  = r["geocodes"][0]
@@ -922,7 +928,7 @@ def geocode(address: str):
                     r2 = requests.get(
                         "https://restapi.amap.com/v3/geocode/regeo",
                         params={"location": coord, "key": AMAP_KEY, "output": "json"},
-                        timeout=10,
+                        timeout=AMAP_TIMEOUT,
                     ).json()
                     comp = r2.get("regeocode", {}).get("addressComponent", {})
                     rt = str(comp.get("township") or "")
@@ -953,6 +959,39 @@ def _kw_at_end(name_m: str, keywords: list) -> bool:
     return False
 
 
+def _classify_amap_error(info: str) -> str:
+    """把高德返回的错误info归类，决定该给用户什么建议。
+    ⚠️ 2026-08-07新增：之前警示条不管什么错都写"配额类问题通常次日重置"，但实际上
+    只有"每日额度用尽"才需要等次日——网络超时立刻重试就好、并发超限等几秒就好，
+    一律让用户等一天是误导（用户线上遇到Read timed out时白等）。"""
+    s = str(info).upper()
+    if "DAILY" in s and "OVER_LIMIT" in s:
+        return "quota"      # 当日免费额度用尽，只能等次日重置或换key
+    if "QPS" in s:
+        return "rate"       # 每秒并发超限（含CUQPS_HAS_EXCEEDED_THE_LIMIT），等几秒即可
+    if "KEY" in s and ("INVALID" in s or "UNKNOWN" in s):
+        return "key"        # key本身无效/未开通该服务，重试无用，要改配置
+    return "other"
+
+
+# 各类错误对应的处置建议（展示在评估结果页顶部的警示条里）
+_AMAP_ERROR_ADVICE = {
+    "network": "这是网络超时/连接问题（网页版服务器在海外，访问高德属跨境链路，偶发超时正常）——"
+               "**直接重新评估一次通常就能成功，不用等**。",
+    "rate":    "这是每秒并发请求数超限——**等几秒后重新评估**即可，当日额度并没有用完。",
+    "quota":   "这是当日免费额度已用尽——**次日0点重置**后再评估；急用可在 Secrets 里换成备用 AMAP_KEY。",
+    "key":     "高德 Key 无效或未开通该服务——重试无用，请检查 Secrets 里的 AMAP_KEY 配置。",
+    "other":   "建议稍后重新评估此站点；若反复出现，去高德控制台确认该 Key 对应应用的用量与服务开通情况。",
+}
+
+
+def _record_amap_error(msg: str, kind: str):
+    """记录高德失败的原因和类别，供UI层展示对应的处置建议。
+    _amap_error 仍存纯文本（批量模式的备注列直接拼这个字符串，保持兼容）。"""
+    st.session_state["_amap_error"] = msg
+    st.session_state["_amap_error_kind"] = kind
+
+
 def _amap_place_around(params: dict):
     """高德POI周边搜索的统一入口，区分"接口失败/配额耗尽"和"真的查到0个"。
     ⚠️ 2026-07-26修复：之前每个find_nearby_*函数各自try/except，配额耗尽（status=0，
@@ -964,12 +1003,13 @@ def _amap_place_around(params: dict):
     返回值：成功时返回原始响应dict；失败时返回None（调用方按老逻辑退化为0/空，
     但_amap_error标记已经设置好，供上层展示警示条）。"""
     try:
-        r = requests.get("https://restapi.amap.com/v3/place/around", params=params, timeout=10).json()
+        r = requests.get("https://restapi.amap.com/v3/place/around", params=params, timeout=AMAP_TIMEOUT).json()
     except Exception as e:
-        st.session_state["_amap_error"] = f"请求异常：{e}"
+        _record_amap_error(f"请求异常：{e}", "network")
         return None
     if str(r.get("status")) != "1":
-        st.session_state["_amap_error"] = str(r.get("info") or "未知错误")
+        info = str(r.get("info") or "未知错误")
+        _record_amap_error(info, _classify_amap_error(info))
         return None
     return r
 
@@ -1115,7 +1155,7 @@ def find_nearby_roads(coord: str):
         r = requests.get(
             "https://restapi.amap.com/v3/geocode/regeo",
             params={"location": coord, "key": AMAP_KEY, "extensions": "all", "output": "json"},
-            timeout=10,
+            timeout=AMAP_TIMEOUT,
         ).json()
         rc = r.get("regeocode") or {}
         township = str((rc.get("addressComponent") or {}).get("township") or "")
@@ -1884,7 +1924,7 @@ if submitted:
                 rg = requests.get(
                     "https://restapi.amap.com/v3/geocode/regeo",
                     params={"location": manual_coord, "key": AMAP_KEY, "output": "json"},
-                    timeout=10,
+                    timeout=AMAP_TIMEOUT,
                 ).json()
                 addr_comp = (rg.get("regeocode") or {}).get("addressComponent") or {}
                 city_raw  = str(addr_comp.get("city") or addr_comp.get("province") or "")
@@ -2031,6 +2071,7 @@ if submitted:
     # 必须在结果页面显眼提示，不能让用户误以为是低置信度选址（这类问题2026-07-26修复前
     # 就真实发生过一次：配额耗尽导致全部POI显示0，触发了错误的"低置信度"判断）。
     st.session_state.eval_amap_error = st.session_state.pop("_amap_error", None)
+    st.session_state.eval_amap_error_kind = st.session_state.pop("_amap_error_kind", "other")
     st.session_state.eval_result  = result
     st.session_state.eval_meta    = {"name": f_name, "addr": f_addr, "coord": coord, "city": city, "district": district}
     st.session_state.eval_benches = benches
@@ -2297,12 +2338,17 @@ if eval_mode == "单站评估" and st.session_state.eval_result:
         # 2026-07-26修复：之前只记录了标记没有真正展示出来，属于半成品。
         _amap_err = st.session_state.get("eval_amap_error")
         if _amap_err:
+            # ⚠️ 2026-08-07：建议文案按错误类别给，不再一律写"配额类问题通常次日重置"——
+            # 超时/并发超限重试就好，只有每日额度用尽才需要等次日，见_classify_amap_error()
+            _kind = st.session_state.get("eval_amap_error_kind", "other")
+            _advice = _AMAP_ERROR_ADVICE.get(_kind, _AMAP_ERROR_ADVICE["other"])
+            _advice_html = _advice.replace("**", "")  # 这里是HTML不是markdown，去掉加粗标记
             st.markdown(
                 f"<div style='background:var(--app-danger-soft);border-left:3px solid var(--app-danger);"
                 f"border-radius:8px;padding:12px 16px;margin-bottom:10px;font-size:0.88rem;color:var(--app-text-secondary)'>"
-                f"<b style='color:var(--app-danger)'>⚠️ 高德地图接口请求失败：{_amap_err}</b><br>"
-                f"本次评估过程中部分周边设施/交通枢纽查询被拒绝，下方数据可能显示为0但并非真实情况，"
-                f"「低置信度」判断也可能因此失真。建议稍后（配额类问题通常次日重置）重新评估此站点。</div>",
+                f"<b style='color:var(--app-danger)'>⚠️ 高德地图接口请求失败：{html.escape(str(_amap_err))}</b><br>"
+                f"本次评估过程中部分周边设施/交通枢纽查询失败，下方数据可能显示为0但并非真实情况，"
+                f"「低置信度」判断、以及依赖POI数量的价格测算也可能因此失真。<br>{html.escape(_advice_html)}</div>",
                 unsafe_allow_html=True,
             )
 
